@@ -28,7 +28,9 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
-    "resources": ["native/bin/OS Notetaker Audio Capture.app"],
+    "resources": {
+      "../.tauri-helper/OS Notetaker Audio Capture.app": "native/bin/OS Notetaker Audio Capture.app"
+    },
     "macOS": {
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "",

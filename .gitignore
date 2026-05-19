@@ -8,6 +8,7 @@ build/
 target/
 debug/
 release/
+.tauri-helper/
 src-tauri/gen/
 src-tauri/native/bin/
 *.rs.bk

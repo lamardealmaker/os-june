@@ -237,8 +237,9 @@ fn macos_version_supports_system_audio() -> bool {
 
 pub fn helper_app_path() -> PathBuf {
     let dev_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("native")
-        .join("bin")
+        .parent()
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+        .join(".tauri-helper")
         .join("OS Notetaker Audio Capture.app");
     if dev_path.exists() {
         return dev_path;
