@@ -19,6 +19,7 @@ pub struct SystemAudioCapture {
     final_path: PathBuf,
     status_path: PathBuf,
     pid_path: PathBuf,
+    log_path: PathBuf,
 }
 
 impl SystemAudioCapture {
@@ -32,9 +33,19 @@ impl SystemAudioCapture {
         }
         let status_path = partial_path.with_extension("status.json");
         let pid_path = partial_path.with_extension("pid");
+        let log_path = partial_path.with_extension("helper.log");
         let _ = std::fs::remove_file(&status_path);
         let _ = std::fs::remove_file(&pid_path);
-        Command::new("/usr/bin/open")
+        let _ = std::fs::remove_file(&log_path);
+        dev_log(format!(
+            "starting helper app={} output={} status={} pid={} log={}",
+            helper_app.display(),
+            partial_path.display(),
+            status_path.display(),
+            pid_path.display(),
+            log_path.display()
+        ));
+        let open_status = Command::new("/usr/bin/open")
             .arg("-n")
             .arg(&helper_app)
             .arg("--args")
@@ -44,11 +55,14 @@ impl SystemAudioCapture {
             .arg(&status_path)
             .arg("--pid")
             .arg(&pid_path)
+            .arg("--log")
+            .arg(&log_path)
             .status()
             .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
+        dev_log(format!("open returned status={open_status}"));
 
         let stats = Arc::new(Mutex::new(SystemAudioStats::default()));
-        let ready = wait_for_status(&status_path, Duration::from_secs(8))?;
+        let ready = wait_for_status(&status_path, Some(&log_path), Duration::from_secs(30))?;
         if ready.event == "error" {
             return Err(AppError::new(
                 "system_audio_permission_denied",
@@ -63,6 +77,7 @@ impl SystemAudioCapture {
                 "System audio helper PID was not written.",
             )
         })?;
+        dev_log(format!("helper ready event={} pid={pid}", ready.event));
         Ok(Self {
             pid,
             stats,
@@ -70,14 +85,17 @@ impl SystemAudioCapture {
             final_path,
             status_path,
             pid_path,
+            log_path,
         })
     }
 
     pub fn pause(&mut self) {
+        dev_log(format!("sending pause to helper pid={}", self.pid));
         send_signal(self.pid, "-USR1");
     }
 
     pub fn resume(&mut self) {
+        dev_log(format!("sending resume to helper pid={}", self.pid));
         send_signal(self.pid, "-USR2");
     }
 
@@ -115,8 +133,13 @@ impl SystemAudioCapture {
     }
 
     pub fn stop(self) -> Result<PathBuf, AppError> {
+        dev_log(format!("stopping helper pid={}", self.pid));
         send_signal(self.pid, "-TERM");
         if wait_for_stopped(&self.status_path, Duration::from_secs(5)).is_err() {
+            dev_log(format!(
+                "helper pid={} did not stop; sending kill",
+                self.pid
+            ));
             send_signal(self.pid, "-KILL");
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -126,6 +149,7 @@ impl SystemAudioCapture {
         }
         let _ = std::fs::remove_file(&self.status_path);
         let _ = std::fs::remove_file(&self.pid_path);
+        let _ = std::fs::remove_file(&self.log_path);
         Ok(self.final_path)
     }
 }
@@ -187,6 +211,14 @@ pub fn helper_permission_check() -> Result<(), AppError> {
         std::env::temp_dir().join(format!("os-notetaker-audio-check-{}", uuid::Uuid::new_v4()));
     let status_path = temp.with_extension("json");
     let pid_path = temp.with_extension("pid");
+    let log_path = temp.with_extension("log");
+    dev_log(format!(
+        "checking helper permission app={} status={} pid={} log={}",
+        helper_app.display(),
+        status_path.display(),
+        pid_path.display(),
+        log_path.display()
+    ));
     let output = Command::new("/usr/bin/open")
         .arg("-W")
         .arg("-n")
@@ -197,11 +229,21 @@ pub fn helper_permission_check() -> Result<(), AppError> {
         .arg(&status_path)
         .arg("--pid")
         .arg(&pid_path)
+        .arg("--log")
+        .arg(&log_path)
         .output()
         .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
+    dev_log(format!("permission check open status={}", output.status));
     let status = read_status(&status_path).ok();
+    if let Some(status) = &status {
+        dev_log(format!("permission check helper event={}", status.event));
+    } else {
+        dev_log("permission check did not write status".to_string());
+        dump_helper_log(&log_path);
+    }
     let _ = std::fs::remove_file(&status_path);
     let _ = std::fs::remove_file(&pid_path);
+    let _ = std::fs::remove_file(&log_path);
     if output.status.success() {
         if let Some(status) = status {
             if status.event != "error" {
@@ -276,15 +318,32 @@ struct HelperStatus {
     message: Option<String>,
 }
 
-fn wait_for_status(path: &Path, timeout: Duration) -> Result<HelperStatus, AppError> {
+fn wait_for_status(
+    path: &Path,
+    log_path: Option<&Path>,
+    timeout: Duration,
+) -> Result<HelperStatus, AppError> {
     let started = Instant::now();
+    let mut last_event = String::new();
     loop {
         if let Ok(status) = read_status(path) {
-            if matches!(status.event.as_str(), "ready" | "error") {
+            if status.event != last_event {
+                dev_log(format!("helper status event={}", status.event));
+                last_event = status.event.clone();
+            }
+            if matches!(status.event.as_str(), "ready" | "level" | "error") {
                 return Ok(status);
             }
         }
         if started.elapsed() >= timeout {
+            dev_log(format!(
+                "helper readiness timed out after {:?}; status_exists={}",
+                timeout,
+                path.exists()
+            ));
+            if let Some(log_path) = log_path {
+                dump_helper_log(log_path);
+            }
             return Err(AppError::new(
                 "system_audio_unavailable",
                 "System audio helper did not become ready.",
@@ -339,3 +398,32 @@ fn read_status(path: &Path) -> Result<HelperStatus, std::io::Error> {
 fn read_pid(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }
+
+#[cfg(debug_assertions)]
+fn dev_log(message: String) {
+    eprintln!("[system-audio] {message}");
+}
+
+#[cfg(not(debug_assertions))]
+fn dev_log(_message: String) {}
+
+#[cfg(debug_assertions)]
+fn dump_helper_log(path: &Path) {
+    match std::fs::read_to_string(path) {
+        Ok(log) if !log.trim().is_empty() => {
+            eprintln!("[system-audio] helper log follows:");
+            for line in log.lines() {
+                eprintln!("[system-audio-helper] {line}");
+            }
+        }
+        Ok(_) => eprintln!("[system-audio] helper log is empty at {}", path.display()),
+        Err(error) => eprintln!(
+            "[system-audio] helper log unavailable at {}: {}",
+            path.display(),
+            error
+        ),
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn dump_helper_log(_path: &Path) {}

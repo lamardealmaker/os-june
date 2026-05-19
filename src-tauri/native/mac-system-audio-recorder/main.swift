@@ -50,6 +50,7 @@ final class SystemAudioRecorder {
     private let outputURL: URL?
     private let statusURL: URL?
     private let pidURL: URL?
+    private let logURL: URL?
     private let queue = DispatchQueue(label: "network.opensoftware.os-notetaker.system-audio", qos: .userInitiated)
     private let pauseLock = NSLock()
 
@@ -63,15 +64,17 @@ final class SystemAudioRecorder {
     private var isPaused = false
     private var lastLevelEmit = Date.distantPast
 
-    init(outputURL: URL?, statusURL: URL?, pidURL: URL?) {
+    init(outputURL: URL?, statusURL: URL?, pidURL: URL?, logURL: URL?) {
         self.outputURL = outputURL
         self.statusURL = statusURL
         self.pidURL = pidURL
+        self.logURL = logURL
     }
 
     func writePid() {
         guard let pidURL else { return }
         try? "\(getpid())".write(to: pidURL, atomically: true, encoding: .utf8)
+        log("wrote pid \(getpid()) to \(pidURL.path)")
     }
 
     func pause() {
@@ -89,6 +92,7 @@ final class SystemAudioRecorder {
     }
 
     func start() throws {
+        log("starting; output=\(outputURL?.path ?? "check") status=\(statusURL?.path ?? "none")")
         if let outputURL {
             try? FileManager.default.removeItem(at: outputURL)
             try FileManager.default.createDirectory(at: outputURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -102,12 +106,15 @@ final class SystemAudioRecorder {
         var tapID = AudioObjectID.unknown
         var err = AudioHardwareCreateProcessTap(tapDescription, &tapID)
         guard err == noErr else {
+            log("AudioHardwareCreateProcessTap failed err=\(err)")
             throw "System audio permission or tap creation failed with error \(err)"
         }
+        log("created process tap id=\(tapID)")
         processTapID = tapID
 
         let systemOutputID = try AudioObjectID.readDefaultSystemOutputDevice()
         let outputUID = try systemOutputID.readDeviceUID()
+        log("default output device id=\(systemOutputID) uid=\(outputUID)")
         let aggregateUID = UUID().uuidString
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "OS Notetaker System Audio",
@@ -128,7 +135,11 @@ final class SystemAudioRecorder {
         ]
 
         err = AudioHardwareCreateAggregateDevice(description as CFDictionary, &aggregateDeviceID)
-        guard err == noErr else { throw "Failed to create aggregate audio device: \(err)" }
+        guard err == noErr else {
+            log("AudioHardwareCreateAggregateDevice failed err=\(err)")
+            throw "Failed to create aggregate audio device: \(err)"
+        }
+        log("created aggregate device id=\(aggregateDeviceID)")
 
         var streamDescription = try tapID.readAudioTapStreamBasicDescription()
         guard let inputFormat = AVAudioFormat(streamDescription: &streamDescription) else {
@@ -178,10 +189,18 @@ final class SystemAudioRecorder {
                 self.emit(["event": "error", "message": error.localizedDescription])
             }
         }
-        guard err == noErr else { throw "Failed to create audio IO callback: \(err)" }
+        guard err == noErr else {
+            log("AudioDeviceCreateIOProcIDWithBlock failed err=\(err)")
+            throw "Failed to create audio IO callback: \(err)"
+        }
+        log("created IO callback")
 
         err = AudioDeviceStart(aggregateDeviceID, deviceProcID)
-        guard err == noErr else { throw "Failed to start system audio capture: \(err)" }
+        guard err == noErr else {
+            log("AudioDeviceStart failed err=\(err)")
+            throw "Failed to start system audio capture: \(err)"
+        }
+        log("audio device started")
 
         emit(["event": "ready", "output": outputURL?.path ?? "check"])
     }
@@ -202,6 +221,7 @@ final class SystemAudioRecorder {
         audioFile = nil
         audioConverter = nil
         outputFormat = nil
+        log("stopped")
         emit(["event": "stopped", "output": outputURL?.path ?? "check"])
     }
 
@@ -236,6 +256,10 @@ final class SystemAudioRecorder {
         guard let statusURL else { return }
         try? data.write(to: statusURL)
     }
+
+    private func log(_ message: String) {
+        writeLog(message, logURL: logURL)
+    }
 }
 
 func argumentValue(_ name: String, from arguments: [String]) -> String? {
@@ -254,8 +278,24 @@ func emitProcessStatus(_ object: [String: String], statusPath: String?) {
 }
 
 let statusPath = argumentValue("--status", from: CommandLine.arguments)
+let logPath = argumentValue("--log", from: CommandLine.arguments)
+
+func writeLog(_ message: String, logURL: URL?) {
+    guard let logURL else { return }
+    let line = "\(Date()) pid=\(getpid()) \(message)\n"
+    if FileManager.default.fileExists(atPath: logURL.path), let handle = try? FileHandle(forWritingTo: logURL) {
+        defer { try? handle.close() }
+        try? handle.seekToEnd()
+        try? handle.write(contentsOf: Data(line.utf8))
+    } else {
+        try? line.write(to: logURL, atomically: true, encoding: .utf8)
+    }
+}
+
+writeLog("launched args=\(CommandLine.arguments.joined(separator: " "))", logURL: logPath.map { URL(fileURLWithPath: $0) })
 
 guard #available(macOS 14.2, *) else {
+    writeLog("unsupported macOS version", logURL: logPath.map { URL(fileURLWithPath: $0) })
     emitProcessStatus(["event": "error", "message": "System audio recording requires macOS 14.2 or later."], statusPath: statusPath)
     exit(2)
 }
@@ -264,14 +304,17 @@ let checkOnly = CommandLine.arguments.contains("--check")
 let outputPath = argumentValue("--output", from: CommandLine.arguments)
 let pidPath = argumentValue("--pid", from: CommandLine.arguments)
 if !checkOnly && outputPath == nil {
+    writeLog("missing output argument", logURL: logPath.map { URL(fileURLWithPath: $0) })
     emitProcessStatus(["event": "error", "message": "Usage: os-notetaker-system-audio-recorder --output /path/to/recording.wav"], statusPath: statusPath)
     exit(2)
 }
 
+let helperLogURL = logPath.map { URL(fileURLWithPath: $0) }
 let recorder = SystemAudioRecorder(
     outputURL: outputPath.map { URL(fileURLWithPath: $0) },
     statusURL: statusPath.map { URL(fileURLWithPath: $0) },
-    pidURL: pidPath.map { URL(fileURLWithPath: $0) }
+    pidURL: pidPath.map { URL(fileURLWithPath: $0) },
+    logURL: helperLogURL
 )
 recorder.writePid()
 
@@ -310,6 +353,7 @@ do {
         exit(0)
     }
 } catch {
+    writeLog("start failed: \(error.localizedDescription)", logURL: helperLogURL)
     emitProcessStatus(["event": "error", "message": error.localizedDescription], statusPath: statusPath)
     exit(1)
 }
