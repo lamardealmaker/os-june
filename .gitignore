@@ -9,6 +9,7 @@ target/
 debug/
 release/
 src-tauri/gen/
+src-tauri/native/bin/
 *.rs.bk
 *.rlib
 *.prof*

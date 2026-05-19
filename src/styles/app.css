@@ -151,11 +151,96 @@ select {
   backdrop-filter: blur(22px) saturate(1.35);
 }
 
+.source-mode-control {
+  display: grid;
+  gap: 8px;
+  align-content: center;
+}
+
+.source-mode-options {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(150px, max-content));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid rgba(31, 35, 42, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.source-mode-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: #343b46;
+  font-size: 13px;
+  font-weight: 620;
+  cursor: pointer;
+}
+
+.source-mode-option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.source-mode-option[data-selected="true"] {
+  color: #0f172a;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 5px 14px rgba(17, 24, 39, 0.08);
+}
+
+.source-mode-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.source-readiness-warning {
+  max-width: 420px;
+  color: #9a4d00;
+  font-size: 13px;
+  text-align: center;
+}
+
+.source-readiness-warning p {
+  margin: 0;
+}
+
 .recorder-meter {
   display: grid;
   grid-template-columns: 58px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
+}
+
+.source-status-list {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.source-status {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 86px;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(31, 35, 42, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.48);
+  font-size: 12px;
+}
+
+.source-status .waveform {
+  min-height: 20px;
+}
+
+.source-status .waveform span {
+  min-height: 16px;
 }
 
 .elapsed {
@@ -283,9 +368,28 @@ select {
   line-height: 1.55;
 }
 
+.source-transcripts {
+  display: grid;
+  gap: 16px;
+}
+
+.source-transcripts h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  color: #4b5563;
+}
+
+.source-transcripts p {
+  margin: 0;
+}
+
 .editor-footer {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
   justify-content: center;
+  align-items: center;
   min-height: 64px;
 }
 
@@ -325,6 +429,16 @@ select {
 .recovery-banner p {
   margin: 4px 0 0;
   color: #7a4b18;
+}
+
+.recovery-sources {
+  display: flex;
+  gap: 10px;
+  margin: 8px 0 0;
+  padding: 0;
+  color: #7a4b18;
+  font-size: 13px;
+  list-style: none;
 }
 
 .recovery-actions {
