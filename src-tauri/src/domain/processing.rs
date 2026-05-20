@@ -1,14 +1,22 @@
 use crate::{
+    audio::turns::{
+        coalesce_turns_for_transcription, detect_turns, write_turn_wav, DetectionSource,
+    },
     db::repositories::Repositories,
     domain::types::{AppError, NoteDto, ProcessingStatus, RecordingSourceMode},
     providers::{
         generation::{generate_note_from_transcript, GenerationRequest},
-        transcription::{transcribe_saved_audio, TranscriptionRequest},
+        transcription::{
+            transcribe_saved_audio, TranscriptionProviderResult, TranscriptionRequest,
+        },
     },
 };
-use std::path::PathBuf;
+use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 
-pub const PROMPT_VERSION: &str = "notes-mvp-v1";
+pub const PROMPT_VERSION: &str = "notes-mvp-v2";
+const TRANSCRIPT_COHERENCE_GAP_MS: i64 = 2_500;
+const TRANSCRIPTION_CONTEXT_MAX_CHARS: usize = 1_200;
+const TRANSCRIPTION_CONTEXT_MAX_TURNS: usize = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceTranscriptInput {
@@ -16,6 +24,9 @@ pub struct SourceTranscriptInput {
     pub text: String,
     pub valid: bool,
     pub warning: Option<String>,
+    pub start_ms: Option<i64>,
+    pub end_ms: Option<i64>,
+    pub turn_index: Option<i64>,
 }
 
 pub fn valid_sources_for_processing(
@@ -28,18 +39,86 @@ pub fn valid_sources_for_processing(
 }
 
 pub fn labeled_transcript_from_sources(sources: &[SourceTranscriptInput]) -> String {
-    sources
+    let mut sources = sources
         .iter()
         .filter(|source| source.valid && !source.text.trim().is_empty())
+        .collect::<Vec<_>>();
+    sources.sort_by(|left, right| {
+        left.turn_index
+            .unwrap_or(i64::MAX)
+            .cmp(&right.turn_index.unwrap_or(i64::MAX))
+            .then_with(|| {
+                left.start_ms
+                    .unwrap_or(i64::MAX)
+                    .cmp(&right.start_ms.unwrap_or(i64::MAX))
+            })
+    });
+    sources
+        .into_iter()
         .map(|source| {
             let label = match source.source.as_str() {
-                "system" => "System audio",
+                "system" => "System",
                 _ => "Microphone",
             };
-            format!("## {label}\n{}", source.text.trim())
+            format!("{label}: {}", source.text.trim())
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n")
+}
+
+pub fn coalesce_source_transcripts(
+    sources: Vec<SourceTranscriptInput>,
+) -> Vec<SourceTranscriptInput> {
+    let mut sources = ordered_source_transcripts(sources);
+    let mut coalesced: Vec<SourceTranscriptInput> = Vec::new();
+    for source in sources.drain(..) {
+        if let Some(last) = coalesced.last_mut() {
+            if can_coalesce_source_transcripts(last, &source) {
+                last.text = join_transcript_text(&last.text, &source.text);
+                last.end_ms = match (last.end_ms, source.end_ms) {
+                    (Some(left), Some(right)) => Some(left.max(right)),
+                    (None, value) | (value, None) => value,
+                };
+                continue;
+            }
+        }
+        coalesced.push(source);
+    }
+    for (index, source) in coalesced.iter_mut().enumerate() {
+        source.turn_index = Some(index as i64);
+    }
+    coalesced
+}
+
+pub fn build_transcription_context(previous: &[SourceTranscriptInput]) -> Option<String> {
+    let valid = ordered_source_transcripts(previous.to_vec())
+        .into_iter()
+        .filter(|source| source.valid && !source.text.trim().is_empty())
+        .collect::<Vec<_>>();
+    if valid.is_empty() {
+        return None;
+    }
+    let mut lines = valid
+        .iter()
+        .rev()
+        .take(TRANSCRIPTION_CONTEXT_MAX_TURNS)
+        .collect::<Vec<_>>();
+    lines.reverse();
+    let transcript = lines
+        .into_iter()
+        .map(|source| {
+            let label = match source.source.as_str() {
+                "system" => "System",
+                _ => "Microphone",
+            };
+            format!("{label}: {}", source.text.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let transcript = tail_chars(&transcript, TRANSCRIPTION_CONTEXT_MAX_CHARS);
+    Some(format!(
+        "Previous transcript context:\n{transcript}\n\nPreserve the spoken language, vocabulary, names, and style when this audio continues the same conversation. Do not translate."
+    ))
 }
 
 pub async fn process_saved_audio(
@@ -48,6 +127,7 @@ pub async fn process_saved_audio(
     audio_artifact_id: &str,
     audio_path: PathBuf,
     title: String,
+    manual_notes: Option<String>,
 ) -> Result<NoteDto, AppError> {
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
@@ -57,6 +137,7 @@ pub async fn process_saved_audio(
         provider: provider.clone(),
         audio_path,
         title: title.clone(),
+        context: None,
     })
     .await
     {
@@ -89,6 +170,7 @@ pub async fn process_saved_audio(
         provider,
         title,
         transcript: transcript.text,
+        manual_notes,
         language: transcript.language,
     })
     .await
@@ -127,53 +209,101 @@ pub async fn process_saved_source_audio(
     source_mode: RecordingSourceMode,
     sources: Vec<(String, String, PathBuf)>,
     title: String,
+    manual_notes: Option<String>,
 ) -> Result<NoteDto, AppError> {
     repos
         .set_note_status(note_id, ProcessingStatus::Transcribing, None)
         .await?;
     let provider = crate::providers::configured_provider();
-    let mut transcript_inputs = Vec::new();
     let mut first_transcript_id = None;
-    for (artifact_id, source, audio_path) in sources {
-        let transcript = match transcribe_saved_audio(TranscriptionRequest {
-            provider: provider.clone(),
-            audio_path,
-            title: title.clone(),
-        })
-        .await
-        {
-            Ok(transcript) => transcript,
-            Err(error) => {
-                transcript_inputs.push(SourceTranscriptInput {
-                    source,
-                    text: String::new(),
-                    valid: false,
-                    warning: Some(error.message),
-                });
-                continue;
-            }
+    let turns = detect_turns(
+        &sources
+            .iter()
+            .map(|(artifact_id, source, audio_path)| DetectionSource {
+                artifact_id: artifact_id.clone(),
+                source: source.clone(),
+                path: audio_path.clone(),
+            })
+            .collect::<Vec<_>>(),
+    )?;
+    let turns = if turns.is_empty() {
+        sources
+            .iter()
+            .enumerate()
+            .map(
+                |(index, (artifact_id, source, audio_path))| crate::audio::turns::AudioTurn {
+                    artifact_id: artifact_id.clone(),
+                    source: source.clone(),
+                    source_path: audio_path.clone(),
+                    start_ms: 0,
+                    end_ms: 0,
+                    turn_index: index as i64,
+                },
+            )
+            .collect::<Vec<_>>()
+    } else {
+        turns
+    };
+    let turns = coalesce_turns_for_transcription(turns);
+    let segment_dir = std::env::temp_dir().join(format!("os-notetaker-turns-{session_id}"));
+    let _ = std::fs::remove_dir_all(&segment_dir);
+    std::fs::create_dir_all(&segment_dir)
+        .map_err(|error| AppError::new("audio_turn_failed", error.to_string()))?;
+
+    let mut transcription_jobs = Vec::new();
+    for turn in turns {
+        let segment_path = segment_dir.join(format!(
+            "{:04}-{}-{}-{}.wav",
+            turn.turn_index, turn.source, turn.start_ms, turn.end_ms
+        ));
+        let audio_path = if turn.end_ms > turn.start_ms {
+            write_turn_wav(&turn, &segment_path)?;
+            segment_path.clone()
+        } else {
+            turn.source_path.clone()
         };
+        transcription_jobs.push(TurnTranscriptionJob {
+            artifact_id: turn.artifact_id,
+            source: turn.source,
+            audio_path,
+            start_ms: turn.start_ms,
+            end_ms: turn.end_ms,
+            turn_index: turn.turn_index,
+        });
+    }
+    let transcript_candidates = transcribe_turn_jobs_by_source_lane(
+        transcription_jobs,
+        provider.clone(),
+        title.clone(),
+        default_turn_transcriber(),
+    )
+    .await?;
+    let _ = std::fs::remove_dir_all(&segment_dir);
+
+    let transcript_candidates = coalesce_transcript_candidates(transcript_candidates);
+    let transcript_inputs = transcript_candidates
+        .iter()
+        .map(|candidate| candidate.input.clone())
+        .collect::<Vec<_>>();
+    for candidate in &transcript_candidates {
         let row = repos
             .create_source_transcript(
                 note_id,
                 session_id,
-                &artifact_id,
+                &candidate.artifact_id,
                 source_mode,
-                &source,
-                &transcript.text,
-                transcript.language.clone(),
-                &transcript.provider,
+                &candidate.input.source,
+                &candidate.input.text,
+                candidate.language.clone(),
+                &candidate.provider,
+                candidate.input.start_ms,
+                candidate.input.end_ms,
+                candidate.input.turn_index,
             )
             .await?;
         if first_transcript_id.is_none() {
             first_transcript_id = Some(row.id);
         }
-        transcript_inputs.push(SourceTranscriptInput {
-            source,
-            text: transcript.text,
-            valid: true,
-            warning: None,
-        });
     }
 
     let valid_sources = valid_sources_for_processing(transcript_inputs);
@@ -198,6 +328,7 @@ pub async fn process_saved_source_audio(
         provider,
         title,
         transcript: labeled_transcript,
+        manual_notes,
         language: None,
     })
     .await
@@ -250,6 +381,7 @@ pub async fn retry_from_saved_audio(
             &audio_artifact_id,
             PathBuf::from(audio_path),
             note.title,
+            note.edited_content.clone(),
         )
         .await;
     }
@@ -263,6 +395,299 @@ pub async fn retry_from_saved_audio(
             .map(|(id, source, path)| (id, source, PathBuf::from(path)))
             .collect(),
         note.title,
+        note.edited_content,
     )
     .await
+}
+
+#[derive(Debug, Clone)]
+struct TranscriptCandidate {
+    artifact_id: String,
+    language: Option<String>,
+    provider: String,
+    input: SourceTranscriptInput,
+}
+
+#[derive(Debug, Clone)]
+struct TurnTranscriptionJob {
+    artifact_id: String,
+    source: String,
+    audio_path: PathBuf,
+    start_ms: i64,
+    end_ms: i64,
+    turn_index: i64,
+}
+
+type TranscriptionFuture =
+    Pin<Box<dyn Future<Output = Result<TranscriptionProviderResult, AppError>> + Send>>;
+type TurnTranscriber = Arc<dyn Fn(TranscriptionRequest) -> TranscriptionFuture + Send + Sync>;
+
+fn default_turn_transcriber() -> TurnTranscriber {
+    Arc::new(|request| Box::pin(transcribe_saved_audio(request)))
+}
+
+async fn transcribe_turn_jobs_by_source_lane(
+    jobs: Vec<TurnTranscriptionJob>,
+    provider: String,
+    title: String,
+    transcriber: TurnTranscriber,
+) -> Result<Vec<TranscriptCandidate>, AppError> {
+    let mut lanes: Vec<(String, Vec<TurnTranscriptionJob>)> = Vec::new();
+    for job in jobs {
+        if let Some((_, lane_jobs)) = lanes
+            .iter_mut()
+            .find(|(source, _)| source.as_str() == job.source.as_str())
+        {
+            lane_jobs.push(job);
+        } else {
+            lanes.push((job.source.clone(), vec![job]));
+        }
+    }
+
+    let mut join_set = tokio::task::JoinSet::new();
+    for (_, lane_jobs) in lanes {
+        let provider = provider.clone();
+        let title = title.clone();
+        let transcriber = Arc::clone(&transcriber);
+        join_set.spawn(async move {
+            transcribe_source_lane(lane_jobs, provider, title, transcriber).await
+        });
+    }
+
+    let mut candidates = Vec::new();
+    while let Some(result) = join_set.join_next().await {
+        let mut lane_candidates =
+            result.map_err(|error| AppError::new("transcription_failed", error.to_string()))??;
+        candidates.append(&mut lane_candidates);
+    }
+    candidates.sort_by(|left, right| {
+        left.input
+            .turn_index
+            .unwrap_or(i64::MAX)
+            .cmp(&right.input.turn_index.unwrap_or(i64::MAX))
+            .then_with(|| {
+                left.input
+                    .start_ms
+                    .unwrap_or(i64::MAX)
+                    .cmp(&right.input.start_ms.unwrap_or(i64::MAX))
+            })
+    });
+    Ok(candidates)
+}
+
+async fn transcribe_source_lane(
+    jobs: Vec<TurnTranscriptionJob>,
+    provider: String,
+    title: String,
+    transcriber: TurnTranscriber,
+) -> Result<Vec<TranscriptCandidate>, AppError> {
+    let mut transcript_inputs = Vec::new();
+    let mut transcript_candidates = Vec::new();
+    for job in jobs {
+        let transcript = match transcriber(TranscriptionRequest {
+            provider: provider.clone(),
+            audio_path: job.audio_path,
+            title: title.clone(),
+            context: build_transcription_context(&transcript_inputs),
+        })
+        .await
+        {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                transcript_inputs.push(SourceTranscriptInput {
+                    source: job.source,
+                    text: String::new(),
+                    valid: false,
+                    warning: Some(error.message),
+                    start_ms: Some(job.start_ms),
+                    end_ms: Some(job.end_ms),
+                    turn_index: Some(job.turn_index),
+                });
+                continue;
+            }
+        };
+        let input = SourceTranscriptInput {
+            source: job.source,
+            text: transcript.text,
+            valid: true,
+            warning: None,
+            start_ms: Some(job.start_ms),
+            end_ms: Some(job.end_ms),
+            turn_index: Some(job.turn_index),
+        };
+        transcript_inputs.push(input.clone());
+        transcript_candidates.push(TranscriptCandidate {
+            artifact_id: job.artifact_id,
+            language: transcript.language,
+            provider: transcript.provider,
+            input,
+        });
+    }
+    Ok(transcript_candidates)
+}
+
+fn coalesce_transcript_candidates(
+    candidates: Vec<TranscriptCandidate>,
+) -> Vec<TranscriptCandidate> {
+    let mut coalesced: Vec<TranscriptCandidate> = Vec::new();
+    for candidate in candidates {
+        if let Some(last) = coalesced.last_mut() {
+            if can_coalesce_source_transcripts(&last.input, &candidate.input) {
+                last.input.text = join_transcript_text(&last.input.text, &candidate.input.text);
+                last.input.end_ms = match (last.input.end_ms, candidate.input.end_ms) {
+                    (Some(left), Some(right)) => Some(left.max(right)),
+                    (None, value) | (value, None) => value,
+                };
+                if last.language.is_none() {
+                    last.language = candidate.language;
+                }
+                continue;
+            }
+        }
+        coalesced.push(candidate);
+    }
+    for (index, candidate) in coalesced.iter_mut().enumerate() {
+        candidate.input.turn_index = Some(index as i64);
+    }
+    coalesced
+}
+
+fn ordered_source_transcripts(
+    mut sources: Vec<SourceTranscriptInput>,
+) -> Vec<SourceTranscriptInput> {
+    sources.sort_by(|left, right| {
+        left.turn_index
+            .unwrap_or(i64::MAX)
+            .cmp(&right.turn_index.unwrap_or(i64::MAX))
+            .then_with(|| {
+                left.start_ms
+                    .unwrap_or(i64::MAX)
+                    .cmp(&right.start_ms.unwrap_or(i64::MAX))
+            })
+    });
+    sources
+}
+
+fn can_coalesce_source_transcripts(
+    left: &SourceTranscriptInput,
+    right: &SourceTranscriptInput,
+) -> bool {
+    if !left.valid || !right.valid || left.source != right.source {
+        return false;
+    }
+    match (left.end_ms, right.start_ms) {
+        (Some(left_end), Some(right_start)) => {
+            right_start - left_end <= TRANSCRIPT_COHERENCE_GAP_MS
+        }
+        _ => false,
+    }
+}
+
+fn join_transcript_text(left: &str, right: &str) -> String {
+    let left = left.trim();
+    let right = right.trim();
+    if left.is_empty() {
+        return right.to_string();
+    }
+    if right.is_empty() {
+        return left.to_string();
+    }
+    format!("{left} {right}")
+}
+
+fn tail_chars(value: &str, max_chars: usize) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    if chars.len() <= max_chars {
+        return value.to_string();
+    }
+    chars[chars.len() - max_chars..].iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::transcription::TranscriptionProviderResult;
+    use std::{
+        collections::HashMap,
+        path::PathBuf,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc, Mutex,
+        },
+        time::Duration,
+    };
+
+    #[tokio::test]
+    async fn transcribes_source_lanes_concurrently_and_keeps_turn_order() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let contexts = Arc::new(Mutex::new(Vec::new()));
+        let transcriber = {
+            let active = Arc::clone(&active);
+            let max_active = Arc::clone(&max_active);
+            let contexts = Arc::clone(&contexts);
+            Arc::new(move |request: TranscriptionRequest| {
+                let active = Arc::clone(&active);
+                let max_active = Arc::clone(&max_active);
+                let contexts = Arc::clone(&contexts);
+                Box::pin(async move {
+                    let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(now_active, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    contexts.lock().unwrap().push((
+                        request.audio_path.to_string_lossy().to_string(),
+                        request.context,
+                    ));
+                    Ok(TranscriptionProviderResult {
+                        text: request.audio_path.to_string_lossy().to_string(),
+                        language: Some("es".to_string()),
+                        provider: "test".to_string(),
+                    })
+                }) as TranscriptionFuture
+            }) as TurnTranscriber
+        };
+
+        let candidates = transcribe_turn_jobs_by_source_lane(
+            vec![
+                test_job("m0", "microphone", 0),
+                test_job("s1", "system", 1),
+                test_job("m2", "microphone", 2),
+            ],
+            "test-provider".to_string(),
+            "Meeting".to_string(),
+            transcriber,
+        )
+        .await
+        .expect("source lanes should transcribe");
+
+        assert!(max_active.load(Ordering::SeqCst) > 1);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.input.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m0", "s1", "m2"]
+        );
+
+        let contexts = contexts.lock().unwrap();
+        let context_by_path = contexts.iter().cloned().collect::<HashMap<_, _>>();
+        assert!(context_by_path["m0"].is_none());
+        assert!(context_by_path["s1"].is_none());
+        assert!(context_by_path["m2"]
+            .as_ref()
+            .expect("second microphone turn should receive prior microphone context")
+            .contains("Microphone: m0"));
+    }
+
+    fn test_job(path: &str, source: &str, turn_index: i64) -> TurnTranscriptionJob {
+        TurnTranscriptionJob {
+            artifact_id: format!("artifact-{path}"),
+            source: source.to_string(),
+            audio_path: PathBuf::from(path),
+            start_ms: turn_index * 1_000,
+            end_ms: turn_index * 1_000 + 500,
+            turn_index,
+        }
+    }
 }

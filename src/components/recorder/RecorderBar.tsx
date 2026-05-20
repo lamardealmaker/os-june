@@ -34,7 +34,9 @@ export function RecorderBar({
     ? "Resume"
     : status.state === "recording"
       ? "Pause"
-      : "Finalizing";
+      : status.state === "starting"
+        ? "Starting"
+        : "Finalizing";
 
   return (
     <div className="recorder-bar" data-state={status.state}>

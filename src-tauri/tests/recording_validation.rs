@@ -1,7 +1,8 @@
 use hound::{SampleFormat, WavSpec, WavWriter};
 use os_notetaker_lib::{
     audio::validation::{
-        source_audio_passes_validation, validate_audio_artifact, AudioValidationConfig,
+        source_audio_passes_validation, validate_audio_artifact, validation_config_for_source,
+        AudioValidationConfig,
     },
     domain::types::RecordingSource,
 };
@@ -63,6 +64,27 @@ fn write_impulse_wav(path: &Path, impulse_amplitude: i16, duration_ms: u32) {
     writer.finalize().expect("wav finalize");
 }
 
+fn write_sparse_peak_wav(path: &Path, amplitude: i16, duration_ms: u32, every_n_frames: usize) {
+    let spec = WavSpec {
+        channels: 2,
+        sample_rate: 48_000,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+    let mut writer = WavWriter::create(path, spec).expect("wav writer");
+    let frames = (spec.sample_rate as f32 * (duration_ms as f32 / 1000.0)) as usize;
+    for i in 0..frames {
+        let sample = if i % every_n_frames == 0 {
+            amplitude
+        } else {
+            0
+        };
+        writer.write_sample(sample).expect("left sample write");
+        writer.write_sample(sample).expect("right sample write");
+    }
+    writer.finalize().expect("wav finalize");
+}
+
 #[test]
 fn accepts_readable_non_silent_wav_with_expected_duration() {
     let dir = tempdir().expect("tempdir");
@@ -112,6 +134,32 @@ fn accepts_shorter_non_silent_system_audio() {
     assert!(!source_audio_passes_validation(
         RecordingSource::Microphone,
         &result
+    ));
+}
+
+#[test]
+fn accepts_low_rms_system_audio_with_strong_peak() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.path().join("quiet-system.wav");
+    write_sparse_peak_wav(&path, 13_107, 2_000, 3_200);
+
+    let default_result = validate_audio_artifact(&path, 2_000, AudioValidationConfig::default())
+        .expect("default validation should run");
+    let system_result = validate_audio_artifact(
+        &path,
+        2_000,
+        validation_config_for_source(RecordingSource::System),
+    )
+    .expect("system validation should run");
+
+    assert!(!default_result.non_silent_signal);
+    assert!(system_result.peak_amplitude > 0.3);
+    assert!(system_result.rms_amplitude > 0.003);
+    assert!(system_result.rms_amplitude < 0.01);
+    assert!(system_result.non_silent_signal);
+    assert!(source_audio_passes_validation(
+        RecordingSource::System,
+        &system_result
     ));
 }
 

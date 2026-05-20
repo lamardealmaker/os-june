@@ -11,6 +11,7 @@ pub struct GenerationRequest {
     pub provider: String,
     pub title: String,
     pub transcript: String,
+    pub manual_notes: Option<String>,
     pub language: Option<String>,
 }
 
@@ -36,7 +37,11 @@ pub async fn generate_note_from_transcript(
 
     match request.provider.as_str() {
         "mock" | "" => Ok(GenerationProviderResult {
-            content: format!("{}\n\n{}", heading_for(&request.title), transcript),
+            content: format!(
+                "{}\n\n{}",
+                heading_for(&request.title),
+                generation_source_text(request.manual_notes.as_deref(), transcript)
+            ),
             title_suggestion: if request.title.trim().is_empty() {
                 Some("New note".to_string())
             } else {
@@ -77,14 +82,15 @@ async fn generate_with_openai(
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_OPENAI_GENERATION_MODEL.to_string());
     let title_hint = request.title.trim();
+    let source_text = generation_source_text(request.manual_notes.as_deref(), transcript);
     let body = json!({
         "model": model,
-        "instructions": "You turn voice transcripts into concise markdown notes. Use only the transcript. Do not invent facts, decisions, dates, or names. Preserve the speaker's language unless the transcript is mixed-language. Return only the note body in markdown.",
+        "instructions": "You turn voice transcripts and user-written manual notes into concise markdown notes. Use only the manual notes and transcript. Treat manual notes as user-authored context and prioritize them when they clarify or correct the transcript. Do not invent facts, decisions, dates, or names. Preserve the speaker's language unless the source material is mixed-language. Return only the final note body in markdown.",
         "input": format!(
-            "Current title: {}\nDetected language: {}\n\nTranscript:\n{}",
+            "Current title: {}\nDetected language: {}\n\n{}",
             if title_hint.is_empty() { "New note" } else { title_hint },
             request.language.as_deref().unwrap_or("unknown"),
-            transcript
+            source_text
         )
     });
     let response = reqwest::Client::new()
@@ -130,6 +136,17 @@ async fn generate_with_openai(
         provider: crate::providers::OPENAI_PROVIDER.to_string(),
         prompt_version: PROMPT_VERSION.to_string(),
     })
+}
+
+fn generation_source_text(manual_notes: Option<&str>, transcript: &str) -> String {
+    let transcript = transcript.trim();
+    let manual_notes = manual_notes
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match manual_notes {
+        Some(manual_notes) => format!("Manual notes:\n{manual_notes}\n\nTranscript:\n{transcript}"),
+        None => format!("Transcript:\n{transcript}"),
+    }
 }
 
 fn extract_response_text(value: &Value) -> Option<String> {

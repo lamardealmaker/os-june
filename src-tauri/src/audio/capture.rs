@@ -211,16 +211,19 @@ pub fn start_capture(
         }
     }
     .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
-    stream
-        .play()
-        .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
-
     let system_capture = if let (Some(system_partial_path), Some(system_final_path)) =
         (system_partial_path.clone(), system_final_path.clone())
     {
-        match SystemAudioCapture::start(system_partial_path.clone(), system_final_path.clone()) {
+        match SystemAudioCapture::start(
+            system_partial_path.clone(),
+            system_final_path.clone(),
+            Duration::ZERO,
+        ) {
             Ok(capture) => Some(capture),
             Err(error) => {
+                if let Ok(mut writer_guard) = writer.lock() {
+                    let _ = writer_guard.take();
+                }
                 let _ = std::fs::remove_file(&partial_path);
                 return Err(error);
             }
@@ -228,6 +231,10 @@ pub fn start_capture(
     } else {
         None
     };
+    stream
+        .play()
+        .map_err(|error| AppError::new("audio_writer_failed", error.to_string()))?;
+    let started = Instant::now();
 
     let status = RecordingStatusDto {
         session_id: session_id.clone(),
@@ -261,8 +268,8 @@ pub fn start_capture(
         source_mode,
         system_final_path: system_final_path.clone(),
         system_capture,
-        started: Instant::now(),
-        active_since: Some(Instant::now()),
+        started,
+        active_since: Some(started),
         accumulated_active: Duration::ZERO,
         paused: false,
         paused_flag,

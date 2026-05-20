@@ -33,6 +33,9 @@ export type TranscriptDto = {
   text: string;
   sourceMode?: RecordingSourceMode;
   source?: RecordingSource;
+  startMs?: number;
+  endMs?: number;
+  turnIndex?: number;
   language?: string;
   status: "pending" | "running" | "succeeded" | "failed";
   lastError?: string;
