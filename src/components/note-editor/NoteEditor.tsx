@@ -89,6 +89,20 @@ export function NoteEditor({
       </header>
 
       <section className="editor-content">
+        {activeTab === "notes" &&
+        (note.processingStatus === "transcribing" ||
+          note.processingStatus === "generating" ||
+          note.processingStatus === "validating") ? (
+          <p
+            className="note-generating"
+            role="status"
+            aria-live="polite"
+          >
+            {note.processingStatus === "transcribing"
+              ? "Transcribing audio…"
+              : "Generating notes…"}
+          </p>
+        ) : null}
         {activeTab === "transcription" ? (
           <div className="transcript-view">
             {note.transcript?.text ? (
@@ -110,7 +124,7 @@ export function NoteEditor({
             noteId={note.id}
             markdown={content}
             onChange={onContentChange}
-            emptyPlaceholder="Record or write to generate notes."
+            emptyPlaceholder="Record or start writing"
           />
         )}
       </section>

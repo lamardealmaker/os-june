@@ -140,7 +140,9 @@
 
     --record: oklch(0.6 0.22 27);
     --focus-ring: oklch(0.6 0.04 250 / 40%);
-    --selection: oklch(0.268 0.0015 84.59);
+    /* Text selection bg needs enough contrast against dark surfaces — the
+     * default muted lightness (0.268) gave a barely-visible wash. */
+    --selection: oklch(0.42 0.06 250);
 
     --shadow-sm: 0 1px 2px oklch(0% 0 none / 30%);
     --shadow-md:

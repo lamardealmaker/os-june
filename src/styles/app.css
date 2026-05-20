@@ -153,18 +153,31 @@ input:focus-visible,
 .sidebar-brand {
   display: inline-flex;
   align-items: center;
-  height: 16px;
+  height: 14px;
   color: var(--foreground);
   text-decoration: none;
   flex: 0 1 auto;
   min-width: 0;
 }
 
-.sidebar-brand img {
+/* Two wordmarks ship side by side; CSS picks the right one per theme. */
+.sidebar-brand-img {
   display: block;
-  height: 16px;
+  height: 14px;
   width: auto;
 }
+
+.sidebar-brand-img.dark { display: none; }
+
+@media (prefers-color-scheme: dark) {
+  .sidebar-brand-img.light { display: none; }
+  .sidebar-brand-img.dark  { display: block; }
+}
+
+[data-theme="dark"] .sidebar-brand-img.light { display: none; }
+[data-theme="dark"] .sidebar-brand-img.dark  { display: block; }
+[data-theme="light"] .sidebar-brand-img.light { display: block; }
+[data-theme="light"] .sidebar-brand-img.dark  { display: none; }
 
 .sidebar[data-collapsed="true"] .sidebar-header {
   padding: var(--sp-1) 0 0;
@@ -182,6 +195,11 @@ input:focus-visible,
   width: 38px;
   height: 38px;
   margin: 0 auto;
+  /* The expanded rule reserves a 30px column for the overflow menu; in the
+   * collapsed rail that column still occupies grid space (display:none
+   * doesn't collapse the template), which nudged the icon off-center. */
+  grid-template-columns: 1fr;
+  place-items: center;
   border-radius: var(--r-md);
 }
 
@@ -341,7 +359,12 @@ input:focus-visible,
 }
 
 .sidebar[data-collapsed="true"] .section-title-label,
-.sidebar[data-collapsed="true"] .section-add {
+.sidebar[data-collapsed="true"] .section-add,
+.sidebar[data-collapsed="true"] .section-title,
+.sidebar[data-collapsed="true"] .notes-nav-wrap {
+  /* Collapsed rail = focus mode: hide the note list entirely so only the
+   * sidebar toggle and search remain. Clicking the search icon expands the
+   * sidebar to bring the notes back. */
   display: none;
 }
 
@@ -359,7 +382,6 @@ input:focus-visible,
   flex-direction: column;
   gap: 1px;
   overflow-y: auto;
-  padding-right: 2px;
   padding-bottom: var(--sp-6);
   /* Fade the bottom edge as long lists scroll past. */
   mask-image: linear-gradient(
@@ -585,11 +607,12 @@ input:focus-visible,
 }
 
 /* Overline — quiet metadata row sitting above the title. Date is plain
- * text; the folder chip is the one actionable affordance. */
+ * text; the folder chip is the one actionable affordance. Status (when
+ * present) floats to the right end so it never crowds the chip. */
 .note-overline {
   display: flex;
   align-items: center;
-  gap: var(--sp-2);
+  gap: var(--sp-3);
   font-size: var(--fs-sm);
   color: var(--muted-foreground);
 }
@@ -600,7 +623,7 @@ input:focus-visible,
 
 .note-overline-dot {
   color: var(--muted-foreground);
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .folder-chip-wrap {
@@ -610,7 +633,7 @@ input:focus-visible,
 .folder-chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
   height: 22px;
   margin: 0 calc(-1 * var(--sp-1));
   padding: 0 var(--sp-2);
@@ -682,6 +705,7 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
+  margin-left: auto; /* float to the right end of the overline row */
   color: var(--muted-foreground);
 }
 
@@ -815,23 +839,18 @@ input:focus-visible,
   color: var(--foreground);
 }
 
-/* Headings — sans (Diatype), only a notch larger than body, medium weight. */
+/* Single-level heading for now (no H2). Diatype, medium weight, just a
+ * notch above body. H2 elements that show up from existing markdown render
+ * identically to H1 so the doc stays consistent. */
 .note-preview h1,
 .note-preview h2 {
-  margin: var(--sp-6) 0 var(--sp-2);
+  margin: var(--sp-5) 0 var(--sp-2);
   color: var(--foreground);
   font-family: var(--font-sans);
+  font-size: 16px;
   font-weight: 600;
   letter-spacing: -0.003em;
   line-height: 1.3;
-}
-
-.note-preview h1 {
-  font-size: 18px;
-}
-
-.note-preview h2 {
-  font-size: var(--fs-xl);
 }
 
 .note-preview > h1:first-child,
@@ -879,20 +898,49 @@ input:focus-visible,
   pointer-events: none;
 }
 
+/* Vercel AI Elements–style shimmer text: muted base with a narrow bright
+ * band that sweeps left-to-right at a constant rate. The narrow highlight
+ * + linear timing is what reads as motion instead of a pulse. */
+.note-generating {
+  margin: var(--sp-3) 0;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  background: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 40%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 60%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% auto;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: note-shimmer 2.2s linear infinite;
+}
+
+@keyframes note-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 /* Floating selection toolbar ---------------------------------------- */
 
+/* Fellow-style floating toolbar: blurred glass, pill, narrow padding. */
 .selection-toolbar {
   position: fixed;
   z-index: 80;
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 3px;
-  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
-  border-radius: var(--r-md);
-  background: color-mix(in oklch, var(--popover) 78%, transparent);
-  -webkit-backdrop-filter: blur(16px) saturate(1.6);
-  backdrop-filter: blur(16px) saturate(1.6);
+  padding: 4px;
+  border: 1px solid color-mix(in oklch, var(--border) 60%, transparent);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--popover) 70%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.7);
+  backdrop-filter: blur(20px) saturate(1.7);
   color: var(--popover-foreground);
   box-shadow: var(--shadow-lg);
   transform: translate(-50%, -100%);
@@ -901,21 +949,34 @@ input:focus-visible,
 .selection-toolbar button {
   display: inline-grid;
   place-items: center;
-  min-width: 28px;
-  height: 26px;
+  min-width: 30px;
+  height: 28px;
   padding: 0 var(--sp-2);
   border: 0;
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
   background: transparent;
   color: var(--muted-foreground);
-  font-size: var(--fs-sm);
+  font-size: var(--fs-md);
   font-weight: 600;
   cursor: pointer;
 }
 
 .selection-toolbar button:hover {
-  background: var(--muted);
+  background: color-mix(in oklch, var(--foreground) 12%, transparent);
   color: var(--foreground);
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Dark glass needs a brighter hover wash to register against the blur. */
+  .selection-toolbar button:hover {
+    background: color-mix(in oklch, white 18%, transparent);
+    color: white;
+  }
+}
+
+[data-theme="dark"] .selection-toolbar button:hover {
+  background: color-mix(in oklch, white 18%, transparent);
+  color: white;
 }
 
 .selection-toolbar .divider {

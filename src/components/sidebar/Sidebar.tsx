@@ -78,7 +78,18 @@ export function Sidebar({
     <aside className="sidebar" data-collapsed={collapsed}>
       <header className="sidebar-header">
         <a className="sidebar-brand" href="#" aria-label="Notetaker">
-          <img src="/os-notetaker.svg" alt="" height={16} />
+          <img
+            className="sidebar-brand-img light"
+            src="/os-notetaker-light.svg"
+            alt=""
+            height={14}
+          />
+          <img
+            className="sidebar-brand-img dark"
+            src="/os-notetaker-dark.svg"
+            alt=""
+            height={14}
+          />
           <span style={{ position: "absolute", left: -9999 }}>Notetaker</span>
         </a>
         {onToggleCollapsed ? (

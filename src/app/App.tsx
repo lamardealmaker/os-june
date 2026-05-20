@@ -168,6 +168,16 @@ export function App() {
         status: { ...state.recordingStatus, state: "validating" },
       });
     }
+    // The backend awaits the full transcribe + generate pipeline before
+    // returning, so we'd never see an in-between status without a poll.
+    // Optimistically flip the selected note into "transcribing" so the
+    // shimmer paints while we wait.
+    if (selectedNote) {
+      dispatch({
+        type: "noteUpdated",
+        note: { ...selectedNote, processingStatus: "transcribing" },
+      });
+    }
     try {
       const result = await finishRecording(sessionId);
       dispatch({ type: "noteUpdated", note: result.note });

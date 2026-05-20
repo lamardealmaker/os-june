@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { IconBold } from "central-icons-filled/IconBold";
+import { IconBulletList } from "central-icons-filled/IconBulletList";
+import { IconH1 } from "central-icons-filled/IconH1";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 type NotePreviewProps = {
   /** Stable id of the note — used to remount the editor when it changes. */
@@ -36,6 +39,12 @@ export function NotePreview({
   // would fight the caret, so it is intentionally not reactive to `markdown`.
   const initialHtml = useMemo(() => markdownToHtml(markdown), [noteId]);
 
+  // Empty tracking lives entirely on the DOM (no React state) so re-renders
+  // can never overwrite the contentEditable's children while the user types.
+  useLayoutEffect(() => {
+    syncEmpty();
+  });
+
   useEffect(() => {
     function update() {
       const selection = window.getSelection();
@@ -69,12 +78,59 @@ export function NotePreview({
     if (root) onChange(htmlToMarkdown(root));
   }
 
-  // Markdown shortcuts: typing "# ", "## ", "- " or "* " at the start of a
-  // line rewrites that block into a heading or bullet — the discoverable
-  // gesture everyone already tries.
+  function syncEmpty() {
+    const root = ref.current;
+    if (!root) return;
+    const empty = !root.textContent?.trim();
+    if (empty) root.setAttribute("data-empty", "true");
+    else root.removeAttribute("data-empty");
+  }
+
+  // Markdown shortcuts: typing "# ", "- " or "* " at the start of a line
+  // rewrites that block into a heading or bullet — the discoverable gesture
+  // everyone already tries.
   function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== " ") return;
-    applyBlockShortcut(ref.current, event);
+    if (event.key === " " || event.code === "Space") {
+      applyBlockShortcut(ref.current, event);
+      return;
+    }
+    if (event.key === "Enter") {
+      // After committing Enter, if we ended up still inside an h1 (some
+      // browsers inherit the tag for the next block), demote to <p>.
+      requestAnimationFrame(() => {
+        const selection = window.getSelection();
+        const root = ref.current;
+        if (!selection || !root) return;
+        let block: Node | null = selection.anchorNode;
+        while (block && block.parentNode !== root) block = block.parentNode;
+        if (block && (block as HTMLElement).tagName === "H1") {
+          document.execCommand("formatBlock", false, "p");
+        }
+      });
+    }
+  }
+
+  function applyFormat(command: "h1" | "bullet" | "bold") {
+    const root = ref.current;
+    if (!root) return;
+    root.focus();
+    if (command === "bold") {
+      document.execCommand("bold");
+    } else if (command === "bullet") {
+      document.execCommand("insertUnorderedList");
+    } else if (command === "h1") {
+      // Toggle between h1 and paragraph for the current block.
+      const selection = window.getSelection();
+      if (!selection) return;
+      let block: Node | null = selection.anchorNode;
+      while (block && block.parentNode !== root) block = block.parentNode;
+      const tag =
+        (block as HTMLElement | null)?.tagName?.toLowerCase() === "h1"
+          ? "p"
+          : "h1";
+      document.execCommand("formatBlock", false, tag);
+    }
+    syncEmpty();
   }
 
   return (
@@ -88,11 +144,9 @@ export function NotePreview({
         role="textbox"
         aria-multiline="true"
         aria-label="Generated note"
-        data-empty={markdown.trim() ? undefined : "true"}
-        data-placeholder={
-          emptyPlaceholder ?? "Record or write to generate notes."
-        }
+        data-placeholder={emptyPlaceholder ?? "Record or start writing"}
         onKeyDown={handleKeyDown}
+        onInput={syncEmpty}
         onBlur={commit}
         dangerouslySetInnerHTML={{ __html: initialHtml }}
       />
@@ -106,29 +160,36 @@ export function NotePreview({
         >
           <button
             type="button"
-            onClick={() => exec("bold")}
-            title="Bold"
-            style={{ fontWeight: 700 }}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => applyFormat("h1")}
+            title="Heading"
+            aria-label="Heading"
           >
-            B
+            <IconH1 size={16} />
+          </button>
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => applyFormat("bullet")}
+            title="Bullet list"
+            aria-label="Bullet list"
+          >
+            <IconBulletList size={16} />
           </button>
           <span className="divider" aria-hidden />
-          <button type="button" onClick={copySelection} title="Copy">
-            Copy
+          <button
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => applyFormat("bold")}
+            title="Bold"
+            aria-label="Bold"
+          >
+            <IconBold size={16} />
           </button>
         </div>
       ) : null}
     </>
   );
-}
-
-function exec(command: "bold") {
-  document.execCommand(command);
-}
-
-function copySelection() {
-  const selection = window.getSelection();
-  if (selection) void navigator.clipboard.writeText(selection.toString());
 }
 
 /* ---- markdown <-> html (tiny subset: headings, lists, paragraphs, bold) -- */
@@ -184,6 +245,10 @@ function markdownToHtml(markdown: string): string {
     html.push(`<p>${inlineToHtml(line)}</p>`);
   }
   closeList();
+  // Always seed at least one block element so the caret has a block to live
+  // in. Without this, an empty editor has loose text nodes under root and
+  // the markdown shortcut walker bails out (the "# disappears" symptom).
+  if (html.length === 0) return "<p><br></p>";
   return html.join("");
 }
 
@@ -200,7 +265,7 @@ function inlineToMarkdown(node: Node): string {
 }
 
 /* Rewrites the caret's current line into a heading / list item when the
- * text typed so far is a markdown marker ("#", "##", "-", "*"). */
+ * text typed so far is a markdown marker ("#", "-", "*"). */
 function applyBlockShortcut(
   root: HTMLDivElement | null,
   event: React.KeyboardEvent<HTMLDivElement>,
@@ -209,11 +274,31 @@ function applyBlockShortcut(
   if (!root || !selection || !selection.isCollapsed) return;
   const range = selection.getRangeAt(0);
 
-  // Walk up to the block element that is a direct child of the editor root.
+  // Walk up to the block element that is a direct child of the editor
+  // root. The caret can land in three places we have to handle:
+  //   1. inside a real block (<p>, <h1>, <li>, …) — easy case
+  //   2. inside a loose text node sitting directly under root — wrap it
+  //   3. on the root itself with no children — seed a <p> and move on
   let block: Node | null = range.startContainer;
-  while (block && block.parentNode !== root) block = block.parentNode;
-  if (!block || block.nodeType !== Node.ELEMENT_NODE) return;
-  const blockEl = block as HTMLElement;
+  while (block && block !== root && block.parentNode !== root) {
+    block = block.parentNode;
+  }
+  let blockEl: HTMLElement;
+  if (block && block !== root && block.nodeType === Node.ELEMENT_NODE) {
+    blockEl = block as HTMLElement;
+  } else if (block && block !== root && block.nodeType === Node.TEXT_NODE) {
+    const wrapper = document.createElement("p");
+    block.parentNode?.insertBefore(wrapper, block);
+    wrapper.appendChild(block);
+    blockEl = wrapper;
+  } else {
+    // Caret was on root itself. Seed an empty <p>, move any loose text
+    // children in, and run the shortcut against that.
+    const wrapper = document.createElement("p");
+    while (root.firstChild) wrapper.appendChild(root.firstChild);
+    root.appendChild(wrapper);
+    blockEl = wrapper;
+  }
 
   const pre = document.createRange();
   pre.selectNodeContents(blockEl);
@@ -223,11 +308,9 @@ function applyBlockShortcut(
   const tag =
     marker === "#"
       ? "h1"
-      : marker === "##"
-        ? "h2"
-        : marker === "-" || marker === "*"
-          ? "li"
-          : null;
+      : marker === "-" || marker === "*"
+        ? "li"
+        : null;
   if (!tag) return;
 
   event.preventDefault();
