@@ -26,6 +26,7 @@ import type {
   RecordingSourceMode,
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
+import { shouldPollProcessingStatus } from "./processing-polling";
 import { createInitialState, notesReducer } from "./state/app-state";
 
 export function App() {
@@ -85,6 +86,22 @@ export function App() {
     }, 250);
     return () => window.clearInterval(interval);
   }, [state.recordingStatus?.sessionId, state.recordingStatus?.state]);
+
+  useEffect(() => {
+    if (
+      !selectedNote ||
+      !shouldPollProcessingStatus(selectedNote.processingStatus)
+    ) {
+      return;
+    }
+    const noteId = selectedNote.id;
+    const interval = window.setInterval(() => {
+      getNote(noteId)
+        .then((note) => dispatch({ type: "noteUpdated", note }))
+        .catch((err: unknown) => setError(messageFromError(err)));
+    }, 1000);
+    return () => window.clearInterval(interval);
+  }, [selectedNote?.id, selectedNote?.processingStatus]);
 
   async function handleCreateNote() {
     try {
@@ -162,12 +179,17 @@ export function App() {
         );
         return;
       }
+      dispatch({
+        type: "recordingStatusChanged",
+        status: startingRecordingStatus(sourceMode),
+      });
       const recording = await startRecording(selectedNote.id, sourceMode);
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
       });
     } catch (err) {
+      dispatch({ type: "recordingStatusCleared" });
       setError(messageFromError(err));
     } finally {
       setCheckingSourceReadiness(false);
@@ -314,6 +336,45 @@ function recordingToStatus(recording: {
     bytesWritten: 0,
     sources: recording.sources,
     warnings: recording.warnings,
+  };
+}
+
+function startingRecordingStatus(
+  sourceMode: RecordingSourceMode,
+): RecordingStatusDto {
+  const sources: RecordingStatusDto["sources"] = [
+    {
+      source: "microphone",
+      state: "starting",
+      elapsedMs: 0,
+      bytesWritten: 0,
+      level: { peak: 0, rms: 0, recentPeaks: [] },
+      silenceWarning: false,
+      pathFinalized: false,
+    },
+  ];
+  if (sourceMode === "microphonePlusSystem") {
+    sources.push({
+      source: "system",
+      state: "starting",
+      elapsedMs: 0,
+      bytesWritten: 0,
+      level: { peak: 0, rms: 0, recentPeaks: [] },
+      silenceWarning: false,
+      pathFinalized: false,
+    });
+  }
+
+  return {
+    sessionId: "",
+    sourceMode,
+    state: "starting",
+    elapsedMs: 0,
+    level: { peak: 0, rms: 0, recentPeaks: [] },
+    silenceWarning: false,
+    bytesWritten: 0,
+    sources,
+    warnings: [],
   };
 }
 

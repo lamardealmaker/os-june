@@ -386,11 +386,25 @@ select {
   gap: 16px;
 }
 
-.source-transcripts h3 {
-  margin: 0 0 6px;
+.transcript-turn {
+  display: grid;
+  gap: 6px;
+}
+
+.transcript-turn-meta {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
   font-size: 13px;
+  font-weight: 700;
   text-transform: uppercase;
   color: #4b5563;
+}
+
+.transcript-turn-meta time {
+  font-size: 12px;
+  font-weight: 500;
+  color: #7b8493;
 }
 
 .source-transcripts p {

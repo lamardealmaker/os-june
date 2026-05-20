@@ -30,6 +30,37 @@ type NoteEditorProps = {
   onTabChange: (tab: "notes" | "transcription") => void;
 };
 
+function sourceLabel(source?: string) {
+  return source === "system" ? "System" : "Microphone";
+}
+
+function formatTurnTime(startMs?: number, endMs?: number) {
+  if (startMs === undefined || endMs === undefined || endMs <= startMs) {
+    return null;
+  }
+  const format = (value: number) => {
+    const seconds = Math.max(0, Math.round(value / 1000));
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  return `${format(startMs)}-${format(endMs)}`;
+}
+
+function isProcessingNote(status: NoteDto["processingStatus"]) {
+  return status === "transcribing" || status === "generating";
+}
+
+function processingMessage(status: NoteDto["processingStatus"]) {
+  switch (status) {
+    case "transcribing":
+      return "Transcribing audio...";
+    case "generating":
+      return "Generating note...";
+    default:
+      return null;
+  }
+}
+
 export function NoteEditor({
   note,
   folders,
@@ -51,6 +82,9 @@ export function NoteEditor({
 }: NoteEditorProps) {
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
+  const processing = isProcessingNote(note.processingStatus);
+  const processingText = processingMessage(note.processingStatus);
+  const canRetry = note.processingStatus === "failed" && !!note.audio;
 
   return (
     <article className="note-editor">
@@ -89,24 +123,35 @@ export function NoteEditor({
         <section className="transcript-view">
           {note.sourceTranscripts?.length ? (
             <div className="source-transcripts">
-              {note.sourceTranscripts.map((transcript) => (
-                <section key={transcript.id}>
-                  <h3>
-                    {transcript.source === "system"
-                      ? "System audio"
-                      : "Microphone"}
-                  </h3>
-                  <p>{transcript.text}</p>
-                  {transcript.lastError ? <p>{transcript.lastError}</p> : null}
-                </section>
-              ))}
+              {note.sourceTranscripts.map((transcript) => {
+                const turnTime = formatTurnTime(
+                  transcript.startMs,
+                  transcript.endMs,
+                );
+                return (
+                  <section className="transcript-turn" key={transcript.id}>
+                    <div className="transcript-turn-meta">
+                      <span>{sourceLabel(transcript.source)}</span>
+                      {turnTime ? <time>{turnTime}</time> : null}
+                    </div>
+                    <p>{transcript.text}</p>
+                    {transcript.lastError ? (
+                      <p>{transcript.lastError}</p>
+                    ) : null}
+                  </section>
+                );
+              })}
             </div>
           ) : note.transcript?.text ? (
             <p>{note.transcript.text}</p>
           ) : (
             <div className="empty-state">
-              <p>{note.lastError ?? "No transcript is available yet."}</p>
-              {note.audio ? (
+              <p>
+                {processingText ??
+                  note.lastError ??
+                  "No transcript is available yet."}
+              </p>
+              {canRetry ? (
                 <button type="button" onClick={onRetry}>
                   Retry
                 </button>
@@ -126,7 +171,7 @@ export function NoteEditor({
       <div className="editor-footer">
         <SourceModeControl
           value={sourceMode}
-          disabled={!!recordingStatus}
+          disabled={!!recordingStatus || processing}
           readiness={sourceReadiness}
           onChange={onSourceModeChange}
         />
@@ -137,6 +182,10 @@ export function NoteEditor({
             onResume={onResumeRecording}
             onDone={onFinishRecording}
           />
+        ) : processing ? (
+          <button type="button" className="record-button" disabled>
+            Working
+          </button>
         ) : (
           <button
             type="button"

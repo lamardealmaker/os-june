@@ -12,6 +12,7 @@ pub struct TranscriptionRequest {
     pub provider: String,
     pub audio_path: PathBuf,
     pub title: String,
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,6 +50,19 @@ pub async fn transcribe_saved_audio(
     }
 }
 
+pub fn normalize_transcription_language(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    if value.len() == 2
+        && value
+            .chars()
+            .all(|character| character.is_ascii_lowercase())
+    {
+        Some(value)
+    } else {
+        None
+    }
+}
+
 async fn transcribe_with_openai(
     request: &TranscriptionRequest,
 ) -> Result<TranscriptionProviderResult, AppError> {
@@ -74,10 +88,23 @@ async fn transcribe_with_openai(
         .file_name(filename)
         .mime_str("audio/wav")
         .map_err(|error| AppError::new("provider_request_failed", error.to_string()))?;
-    let form = Form::new()
+    let supports_prompt = !model.contains("diarize");
+    let mut form = Form::new()
         .text("model", model)
         .text("response_format", "json")
         .part("file", audio_part);
+    if let Some(language) = transcription_language_override() {
+        form = form.text("language", language);
+    }
+    if supports_prompt {
+        if let Some(context) = request
+            .context
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            form = form.text("prompt", context.to_string());
+        }
+    }
     let response = reqwest::Client::new()
         .post(OPENAI_TRANSCRIPTIONS_URL)
         .bearer_auth(api_key)
@@ -110,6 +137,13 @@ async fn transcribe_with_openai(
         language: None,
         provider: crate::providers::OPENAI_PROVIDER.to_string(),
     })
+}
+
+fn transcription_language_override() -> Option<String> {
+    crate::providers::load_local_env();
+    std::env::var("OS_NOTETAKER_TRANSCRIPTION_LANGUAGE")
+        .ok()
+        .and_then(|value| normalize_transcription_language(&value))
 }
 
 #[derive(Debug, Deserialize)]

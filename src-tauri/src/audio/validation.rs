@@ -107,6 +107,16 @@ pub fn validate_audio_artifact(
     Ok(result)
 }
 
+pub fn validation_config_for_source(source: RecordingSource) -> AudioValidationConfig {
+    match source {
+        RecordingSource::Microphone => AudioValidationConfig::default(),
+        RecordingSource::System => AudioValidationConfig {
+            silence_rms_threshold: 0.003,
+            ..AudioValidationConfig::default()
+        },
+    }
+}
+
 pub fn source_audio_passes_validation(
     source: RecordingSource,
     validation: &AudioValidationDto,

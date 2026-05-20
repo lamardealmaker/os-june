@@ -79,6 +79,7 @@ final class SystemAudioRecorder {
     private let statusURL: URL?
     private let pidURL: URL?
     private let logURL: URL?
+    private let timelineOffset: TimeInterval
     private let pauseLock = NSLock()
 
     private var processTapID = AudioObjectID.unknown
@@ -90,14 +91,19 @@ final class SystemAudioRecorder {
     private var outputFormat: AVAudioFormat?
     private var didStop = false
     private var isPaused = false
+    private var activeStartedAt: Date?
+    private var pausedAt: Date?
+    private var accumulatedPausedDuration: TimeInterval = 0
+    private var outputFramesWritten: AVAudioFramePosition = 0
     private var lastLevelEmit = Date.distantPast
     private var maxLevel: Double = 0
 
-    init(outputURL: URL?, statusURL: URL?, pidURL: URL?, logURL: URL?) {
+    init(outputURL: URL?, statusURL: URL?, pidURL: URL?, logURL: URL?, timelineOffset: TimeInterval) {
         self.outputURL = outputURL
         self.statusURL = statusURL
         self.pidURL = pidURL
         self.logURL = logURL
+        self.timelineOffset = timelineOffset
     }
 
     func writePid() {
@@ -108,6 +114,9 @@ final class SystemAudioRecorder {
 
     func pause() {
         pauseLock.lock()
+        if !isPaused {
+            pausedAt = Date()
+        }
         isPaused = true
         pauseLock.unlock()
         emit(["event": "paused"])
@@ -115,6 +124,10 @@ final class SystemAudioRecorder {
 
     func resume() {
         pauseLock.lock()
+        if let pausedAt {
+            accumulatedPausedDuration += Date().timeIntervalSince(pausedAt)
+        }
+        pausedAt = nil
         isPaused = false
         pauseLock.unlock()
         emit(["event": "resumed"])
@@ -193,6 +206,10 @@ final class SystemAudioRecorder {
         self.inputFormat = inputFormat
         self.outputFormat = outputFormat
         audioConverter = converter
+        activeStartedAt = Date().addingTimeInterval(-timelineOffset)
+        accumulatedPausedDuration = 0
+        pausedAt = nil
+        outputFramesWritten = 0
         if let outputURL {
             audioFile = try AVAudioFile(forWriting: outputURL, settings: outputFormat.settings, commonFormat: .pcmFormatInt16, interleaved: true)
         }
@@ -305,10 +322,42 @@ final class SystemAudioRecorder {
             }
             if let conversionError { throw conversionError }
             if status == .haveData || status == .inputRanDry, convertedBuffer.frameLength > 0, let audioFile {
+                try writeTimelineSilenceIfNeeded(beforeWriting: convertedBuffer.frameLength, to: audioFile, format: outputFormat)
                 try audioFile.write(from: convertedBuffer)
+                outputFramesWritten += AVAudioFramePosition(convertedBuffer.frameLength)
             }
         } catch {
             emit(["event": "error", "message": describeError(error)])
+        }
+    }
+
+    private func writeTimelineSilenceIfNeeded(beforeWriting incomingFrames: AVAudioFrameCount, to audioFile: AVAudioFile, format: AVAudioFormat) throws {
+        guard let activeStartedAt else { return }
+        pauseLock.lock()
+        let activePauseDuration = isPaused ? pausedAt.map { Date().timeIntervalSince($0) } ?? 0 : 0
+        let pausedOffset = accumulatedPausedDuration + activePauseDuration
+        pauseLock.unlock()
+        let activeElapsed = max(0, Date().timeIntervalSince(activeStartedAt) - pausedOffset)
+        let expectedFrames = AVAudioFramePosition(activeElapsed * format.sampleRate)
+        var missingFrames = expectedFrames - outputFramesWritten - AVAudioFramePosition(incomingFrames)
+        let toleranceFrames = AVAudioFramePosition(format.sampleRate * 0.08)
+        guard missingFrames > toleranceFrames else { return }
+        while missingFrames > 0 {
+            let chunkFrames = AVAudioFrameCount(min(missingFrames, AVAudioFramePosition(format.sampleRate / 2)))
+            guard let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunkFrames) else { return }
+            silence.frameLength = chunkFrames
+            zeroAudioBuffer(silence)
+            try audioFile.write(from: silence)
+            outputFramesWritten += AVAudioFramePosition(chunkFrames)
+            missingFrames -= AVAudioFramePosition(chunkFrames)
+        }
+    }
+
+    private func zeroAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        let audioBuffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
+        for audioBuffer in audioBuffers {
+            guard let data = audioBuffer.mData else { continue }
+            memset(data, 0, Int(audioBuffer.mDataByteSize))
         }
     }
 
@@ -470,6 +519,7 @@ guard #available(macOS 14.2, *) else {
 let checkOnly = CommandLine.arguments.contains("--check")
 let outputPath = argumentValue("--output", from: CommandLine.arguments)
 let pidPath = argumentValue("--pid", from: CommandLine.arguments)
+let timelineOffsetMs = argumentValue("--timeline-offset-ms", from: CommandLine.arguments).flatMap(Double.init) ?? 0
 if !checkOnly && outputPath == nil {
     writeLog("missing output argument", logURL: logPath.map { URL(fileURLWithPath: $0) })
     emitProcessStatus(["event": "error", "message": "Usage: os-notetaker-system-audio-recorder --output /path/to/recording.wav"], statusPath: statusPath)
@@ -481,7 +531,8 @@ let recorder = SystemAudioRecorder(
     outputURL: outputPath.map { URL(fileURLWithPath: $0) },
     statusURL: statusPath.map { URL(fileURLWithPath: $0) },
     pidURL: pidPath.map { URL(fileURLWithPath: $0) },
-    logURL: helperLogURL
+    logURL: helperLogURL,
+    timelineOffset: max(0, timelineOffsetMs) / 1000
 )
 recorder.writePid()
 

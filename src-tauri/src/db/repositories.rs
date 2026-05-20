@@ -663,7 +663,7 @@ impl Repositories {
 
     async fn latest_transcript(&self, note_id: &str) -> Result<Option<TranscriptDto>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, text, source_mode, source, language, status, last_error
+            "SELECT id, text, source_mode, source, start_ms, end_ms, turn_index, language, status, last_error
              FROM transcripts
              WHERE note_id = ?
              ORDER BY created_at DESC
@@ -679,6 +679,9 @@ impl Repositories {
                 row.get::<String, _>("source_mode").as_str(),
             )),
             source: row.get("source"),
+            start_ms: row.get("start_ms"),
+            end_ms: row.get("end_ms"),
+            turn_index: row.get("turn_index"),
             language: row.get("language"),
             status: row.get("status"),
             last_error: row.get("last_error"),
@@ -687,10 +690,12 @@ impl Repositories {
 
     async fn source_transcripts(&self, note_id: &str) -> Result<Vec<TranscriptDto>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, text, source_mode, source, language, status, last_error
+            "SELECT id, text, source_mode, source, start_ms, end_ms, turn_index, language, status, last_error
              FROM transcripts
              WHERE note_id = ?
-             ORDER BY created_at ASC",
+               AND recording_session_id IS NOT NULL
+               AND turn_index IS NOT NULL
+             ORDER BY COALESCE(turn_index, 999999), COALESCE(start_ms, 999999999), created_at ASC",
         )
         .bind(note_id)
         .fetch_all(&self.pool)
@@ -704,6 +709,9 @@ impl Repositories {
                     row.get::<String, _>("source_mode").as_str(),
                 )),
                 source: row.get("source"),
+                start_ms: row.get("start_ms"),
+                end_ms: row.get("end_ms"),
+                turn_index: row.get("turn_index"),
                 language: row.get("language"),
                 status: row.get("status"),
                 last_error: row.get("last_error"),
@@ -724,6 +732,9 @@ impl Repositories {
             text: text.to_string(),
             source_mode: Some(RecordingSourceMode::MicrophoneOnly),
             source: Some("microphone".to_string()),
+            start_ms: None,
+            end_ms: None,
+            turn_index: None,
             language,
             status: "succeeded".to_string(),
             last_error: None,
@@ -757,12 +768,18 @@ impl Repositories {
         text: &str,
         language: Option<String>,
         provider: &str,
+        start_ms: Option<i64>,
+        end_ms: Option<i64>,
+        turn_index: Option<i64>,
     ) -> Result<TranscriptDto, sqlx::Error> {
         let transcript = TranscriptDto {
             id: Uuid::new_v4().to_string(),
             text: text.to_string(),
             source_mode: Some(source_mode),
             source: Some(source.to_string()),
+            start_ms,
+            end_ms,
+            turn_index,
             language,
             status: "succeeded".to_string(),
             last_error: None,
@@ -770,8 +787,8 @@ impl Repositories {
         let now = timestamp();
         sqlx::query(
             "INSERT INTO transcripts
-             (id, note_id, recording_session_id, audio_artifact_id, source_artifact_id, source, source_mode, text, language, provider, status, retry_count, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', 0, ?, ?)",
+             (id, note_id, recording_session_id, audio_artifact_id, source_artifact_id, source, source_mode, text, start_ms, end_ms, turn_index, language, provider, status, retry_count, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'succeeded', 0, ?, ?)",
         )
         .bind(&transcript.id)
         .bind(note_id)
@@ -781,6 +798,9 @@ impl Repositories {
         .bind(source)
         .bind(source_mode.as_db())
         .bind(text)
+        .bind(start_ms)
+        .bind(end_ms)
+        .bind(turn_index)
         .bind(&transcript.language)
         .bind(provider)
         .bind(&now)

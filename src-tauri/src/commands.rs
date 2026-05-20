@@ -8,7 +8,7 @@ use crate::{
         recovery::scan_recoverable_recordings,
         validation::{
             checksum_file, source_audio_passes_validation, validate_audio_artifact,
-            AudioValidationConfig,
+            validation_config_for_source, AudioValidationConfig,
         },
     },
     db::{migrations::run_migrations, repositories::Repositories},
@@ -246,7 +246,7 @@ pub async fn finish_recording(
         let validation = validate_audio_artifact(
             &source.final_path,
             source.elapsed_ms,
-            AudioValidationConfig::default(),
+            validation_config_for_source(source.source),
         )
         .map_err(|error| AppError::new("audio_validation_failed", error.to_string()))?;
         let checksum = checksum_file(&source.final_path).unwrap_or_default();
@@ -375,22 +375,58 @@ pub async fn finish_recording(
         .add_checkpoint(&finished.session_id, "validation", None)
         .await?;
     let title = repos.get_note(&finished.note_id).await?.title;
-    let note = if valid_sources.len() == 1
-        && finished.source_mode == RecordingSourceMode::MicrophoneOnly
-    {
-        let (artifact_id, _source, path) = valid_sources[0].clone();
-        process_saved_audio(&repos, &finished.note_id, &artifact_id, path, title).await?
-    } else {
-        process_saved_source_audio(
-            &repos,
+    repos
+        .set_note_status(
             &finished.note_id,
-            &finished.session_id,
-            finished.source_mode,
-            valid_sources,
-            title,
+            crate::domain::types::ProcessingStatus::Transcribing,
+            None,
         )
-        .await?
-    };
+        .await?;
+    let note = repos.get_note(&finished.note_id).await?;
+    let manual_notes = note.edited_content.clone();
+    let task_repos = repos.clone();
+    let task_note_id = finished.note_id.clone();
+    let task_session_id = finished.session_id.clone();
+    let task_source_mode = finished.source_mode;
+    tokio::spawn(async move {
+        let result = if valid_sources.len() == 1
+            && task_source_mode == RecordingSourceMode::MicrophoneOnly
+        {
+            let (artifact_id, _source, path) = valid_sources
+                .into_iter()
+                .next()
+                .expect("valid source was checked before starting processing");
+            process_saved_audio(
+                &task_repos,
+                &task_note_id,
+                &artifact_id,
+                path,
+                title,
+                manual_notes,
+            )
+            .await
+        } else {
+            process_saved_source_audio(
+                &task_repos,
+                &task_note_id,
+                &task_session_id,
+                task_source_mode,
+                valid_sources,
+                title,
+                manual_notes,
+            )
+            .await
+        };
+        if let Err(error) = result {
+            let _ = task_repos
+                .set_note_status(
+                    &task_note_id,
+                    crate::domain::types::ProcessingStatus::Failed,
+                    Some(error.message),
+                )
+                .await;
+        }
+    });
     Ok(FinishRecordingResponse {
         note,
         recording: finished.recording,
@@ -533,14 +569,15 @@ pub async fn recover_recording(
                 .await?;
             return Ok(repos.get_note(&info.note_id).await?);
         }
-        let title = repos.get_note(&info.note_id).await?.title;
+        let note = repos.get_note(&info.note_id).await?;
         return process_saved_source_audio(
             &repos,
             &info.note_id,
             &info.session_id,
             info.source_mode,
             valid_sources,
-            title,
+            note.title,
+            note.edited_content,
         )
         .await;
     }
@@ -606,8 +643,16 @@ pub async fn recover_recording(
             &checksum,
         )
         .await?;
-    let title = repos.get_note(&info.note_id).await?.title;
-    process_saved_audio(&repos, &info.note_id, &artifact.id, path, title).await
+    let note = repos.get_note(&info.note_id).await?;
+    process_saved_audio(
+        &repos,
+        &info.note_id,
+        &artifact.id,
+        path,
+        note.title,
+        note.edited_content,
+    )
+    .await
 }
 
 fn recovery_audio_path(info: &crate::db::repositories::RecordingRecoveryInfo) -> Option<PathBuf> {

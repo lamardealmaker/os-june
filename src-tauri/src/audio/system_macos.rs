@@ -25,7 +25,11 @@ pub struct SystemAudioCapture {
 }
 
 impl SystemAudioCapture {
-    pub fn start(partial_path: PathBuf, final_path: PathBuf) -> Result<Self, AppError> {
+    pub fn start(
+        partial_path: PathBuf,
+        final_path: PathBuf,
+        timeline_offset: Duration,
+    ) -> Result<Self, AppError> {
         let helper_app = helper_app_path();
         if !helper_app.exists() {
             return Err(AppError::new(
@@ -60,6 +64,8 @@ impl SystemAudioCapture {
             .arg(&pid_path)
             .arg("--log")
             .arg(&log_path)
+            .arg("--timeline-offset-ms")
+            .arg(timeline_offset.as_millis().to_string())
             .status()
             .map_err(|error| AppError::new("system_audio_unavailable", error.to_string()))?;
         dev_log(format!("open returned status={open_status}"));
@@ -424,10 +430,7 @@ fn wait_for_status(
             if let Some(log_path) = log_path {
                 dump_helper_log(log_path);
             }
-            return Err(AppError::new(
-                "system_audio_unavailable",
-                timeout_message,
-            ));
+            return Err(AppError::new("system_audio_unavailable", timeout_message));
         }
         std::thread::sleep(Duration::from_millis(80));
     }

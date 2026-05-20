@@ -1,5 +1,7 @@
 use os_notetaker_lib::db::{migrations::run_migrations, repositories::Repositories};
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use std::str::FromStr;
+use tempfile::tempdir;
 
 async fn test_repositories() -> Repositories {
     let pool = SqlitePoolOptions::new()
@@ -26,6 +28,36 @@ async fn migrations_create_empty_store() {
 
     assert!(folders.is_empty());
     assert!(notes.items.is_empty());
+}
+
+#[tokio::test]
+async fn migrations_tolerate_concurrent_startup() {
+    let dir = tempdir().expect("tempdir");
+    let database_path = dir.path().join("notes.sqlite3");
+    let url = format!("sqlite://{}", database_path.display());
+    let mut handles = Vec::new();
+
+    for _ in 0..8 {
+        let url = url.clone();
+        handles.push(tokio::spawn(async move {
+            let options = SqliteConnectOptions::from_str(&url)
+                .expect("sqlite options")
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(2)
+                .connect_with(options)
+                .await
+                .expect("sqlite file should open");
+            run_migrations(&pool).await
+        }));
+    }
+
+    for handle in handles {
+        handle
+            .await
+            .expect("migration task should finish")
+            .expect("concurrent migrations should be idempotent");
+    }
 }
 
 #[tokio::test]
