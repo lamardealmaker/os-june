@@ -40,6 +40,22 @@ const TABS = [
   { value: "transcription", label: "Transcription" },
 ] as const;
 
+function sourceLabel(source?: string) {
+  return source === "system" ? "System" : "Microphone";
+}
+
+function formatTurnTime(startMs?: number, endMs?: number) {
+  if (startMs === undefined || endMs === undefined || endMs <= startMs) {
+    return null;
+  }
+  const format = (value: number) => {
+    const seconds = Math.max(0, Math.round(value / 1000));
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  return `${format(startMs)}-${format(endMs)}`;
+}
+
 export function NoteEditor({
   note,
   folders,
@@ -62,9 +78,18 @@ export function NoteEditor({
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
   const recordingForNote = recordingStatus;
-  const shellState = recordingForNote?.state ?? "idle";
+  const processingLock =
+    note.processingStatus === "transcribing" ||
+    note.processingStatus === "generating";
+  const shellState =
+    recordingForNote?.state ?? (processingLock ? "working" : "idle");
   const processing = transientStatus(note.processingStatus);
+  const processingText = processingMessage(note.processingStatus);
+  const canRetry =
+    note.processingStatus === "failed" &&
+    !!(note.audio || note.audioSources?.length);
   const recordDisabled =
+    processingLock ||
     checkingSourceReadiness ||
     (sourceReadiness?.sources.some(
       (source) => source.required && !source.ready,
@@ -124,28 +149,37 @@ export function NoteEditor({
           <div className="transcript-view">
             {note.sourceTranscripts?.length ? (
               <div className="source-transcripts">
-                {note.sourceTranscripts.map((transcript) => (
-                  <section key={transcript.id}>
-                    <h3>
-                      {transcript.source === "system"
-                        ? "System audio"
-                        : "Microphone"}
-                    </h3>
-                    <p>{transcript.text}</p>
-                    {transcript.lastError ? (
-                      <p className="source-transcript-error">
-                        {transcript.lastError}
-                      </p>
-                    ) : null}
-                  </section>
-                ))}
+                {note.sourceTranscripts.map((transcript) => {
+                  const turnTime = formatTurnTime(
+                    transcript.startMs,
+                    transcript.endMs,
+                  );
+                  return (
+                    <section className="transcript-turn" key={transcript.id}>
+                      <div className="transcript-turn-meta">
+                        <span>{sourceLabel(transcript.source)}</span>
+                        {turnTime ? <time>{turnTime}</time> : null}
+                      </div>
+                      <p>{transcript.text}</p>
+                      {transcript.lastError ? (
+                        <p className="source-transcript-error">
+                          {transcript.lastError}
+                        </p>
+                      ) : null}
+                    </section>
+                  );
+                })}
               </div>
             ) : note.transcript?.text ? (
               <p>{note.transcript.text}</p>
             ) : (
               <div className="empty-state">
-                <p>{note.lastError ?? "No transcript is available yet."}</p>
-                {note.audio || note.audioSources?.length ? (
+                <p>
+                  {processingText ??
+                    note.lastError ??
+                    "No transcript is available yet."}
+                </p>
+                {canRetry ? (
                   <button type="button" onClick={onRetry}>
                     <IconArrowRotateClockwise size={14} />
                     Retry
@@ -167,7 +201,7 @@ export function NoteEditor({
       <div className="editor-footer">
         <SourceModeControl
           value={sourceMode}
-          disabled={!!recordingForNote}
+          disabled={!!recordingForNote || processingLock}
           readiness={sourceReadiness}
           onChange={onSourceModeChange}
         />
@@ -189,6 +223,19 @@ export function NoteEditor({
                   onDone={onFinishRecording}
                 />
               </motion.div>
+            ) : processingLock ? (
+              <motion.button
+                key="working"
+                type="button"
+                className="record-button"
+                disabled
+                initial={{ opacity: 0, scale: 0.96 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.96 }}
+                transition={{ duration: 0.14, ease: "easeOut" }}
+              >
+                Working
+              </motion.button>
             ) : (
               <motion.button
                 key="record"
@@ -308,6 +355,17 @@ function transientStatus(status: NoteDto["processingStatus"]): string | null {
       return "Needs attention";
     case "recoverable":
       return "Recoverable";
+    default:
+      return null;
+  }
+}
+
+function processingMessage(status: NoteDto["processingStatus"]): string | null {
+  switch (status) {
+    case "transcribing":
+      return "Transcribing audio...";
+    case "generating":
+      return "Generating note...";
     default:
       return null;
   }

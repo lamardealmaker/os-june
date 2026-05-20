@@ -159,4 +159,65 @@ async fn get_note_returns_transcript_and_audio_metadata() {
         loaded.transcript.expect("transcript").text,
         "Raw transcript text"
     );
+    assert!(loaded.source_transcripts.is_empty());
+}
+
+#[tokio::test]
+async fn get_note_returns_only_timed_source_transcript_rows() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    let session_id = "session-1";
+    repos
+        .create_recording_session(
+            &note.id,
+            session_id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "/tmp/microphone.partial.wav",
+            "/tmp/microphone.wav",
+            None,
+        )
+        .await
+        .expect("session");
+    let audio = repos
+        .create_audio_artifact(
+            &note.id,
+            session_id,
+            "/tmp/microphone.wav",
+            1200,
+            2048,
+            "abc",
+        )
+        .await
+        .expect("artifact");
+    repos
+        .create_transcript(
+            &note.id,
+            &audio.id,
+            "Standalone transcript should not be displayed as a turn.",
+            Some("en".into()),
+            "mock",
+        )
+        .await
+        .expect("standalone transcript");
+    repos
+        .create_source_transcript(
+            &note.id,
+            session_id,
+            &audio.id,
+            RecordingSourceMode::MicrophonePlusSystem,
+            "microphone",
+            "Timed source transcript",
+            Some("en".into()),
+            "mock",
+            Some(1_000),
+            Some(2_000),
+            Some(0),
+        )
+        .await
+        .expect("source transcript");
+
+    let loaded = repos.get_note(&note.id).await.expect("loaded note");
+
+    assert_eq!(loaded.source_transcripts.len(), 1);
+    assert_eq!(loaded.source_transcripts[0].text, "Timed source transcript");
 }

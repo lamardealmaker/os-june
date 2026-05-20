@@ -45,6 +45,9 @@ pub async fn run_migrations(_pool: &SqlitePool) -> Result<(), sqlx::migrate::Mig
     ensure_column(_pool, "transcripts", "recording_session_id", "TEXT").await?;
     ensure_column(_pool, "transcripts", "source_artifact_id", "TEXT").await?;
     ensure_column(_pool, "transcripts", "source", "TEXT").await?;
+    ensure_column(_pool, "transcripts", "start_ms", "INTEGER").await?;
+    ensure_column(_pool, "transcripts", "end_ms", "INTEGER").await?;
+    ensure_column(_pool, "transcripts", "turn_index", "INTEGER").await?;
     ensure_column(
         _pool,
         "transcripts",
@@ -83,10 +86,16 @@ async fn ensure_column(
     });
     if !exists {
         let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
-        sqlx::query(&alter)
-            .execute(pool)
-            .await
-            .map_err(sqlx::migrate::MigrateError::Execute)?;
+        match sqlx::query(&alter).execute(pool).await {
+            Ok(_) => {}
+            Err(error) if is_duplicate_column_error(&error, column) => {}
+            Err(error) => return Err(sqlx::migrate::MigrateError::Execute(error)),
+        }
     }
     Ok(())
+}
+
+fn is_duplicate_column_error(error: &sqlx::Error, column: &str) -> bool {
+    let message = error.to_string().to_lowercase();
+    message.contains("duplicate column name") && message.contains(&column.to_lowercase())
 }

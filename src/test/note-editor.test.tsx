@@ -72,6 +72,43 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Exact raw transcript")).toBeInTheDocument();
   });
 
+  it("shows source transcript turns with labels and timing", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-1",
+              text: "System playback text",
+              source: "system",
+              startMs: 1000,
+              endMs: 2500,
+              turnIndex: 0,
+              status: "succeeded",
+            },
+            {
+              id: "turn-2",
+              text: "Microphone response",
+              source: "microphone",
+              startMs: 3000,
+              endMs: 4500,
+              turnIndex: 1,
+              status: "succeeded",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("System")).toBeInTheDocument();
+    expect(screen.getByText("Microphone")).toBeInTheDocument();
+    expect(screen.getByText("0:01-0:03")).toBeInTheDocument();
+    expect(screen.getByText("System playback text")).toBeInTheDocument();
+    expect(screen.getByText("Microphone response")).toBeInTheDocument();
+  });
+
   it("requests tab change when Transcription is selected", async () => {
     const user = userEvent.setup();
     const onTabChange = vi.fn();
@@ -113,6 +150,7 @@ describe("NoteEditor", () => {
         onRetry={onRetry}
         note={note({
           activeTab: "transcription",
+          processingStatus: "failed",
           lastError: "Transcription failed",
           audio: {
             id: "audio-1",
@@ -130,5 +168,32 @@ describe("NoteEditor", () => {
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(onRetry).toHaveBeenCalled();
+  });
+
+  it("keeps showing working state and hides retry while processing", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          processingStatus: "transcribing",
+          audio: {
+            id: "audio-1",
+            source: "microphone",
+            format: "wav",
+            durationMs: 1200,
+            sizeBytes: 2048,
+            checksum: "abc",
+            createdAt: now,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Working" })).toBeDisabled();
+    expect(screen.getByText("Transcribing audio...")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
   });
 });

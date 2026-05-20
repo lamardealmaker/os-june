@@ -890,11 +890,18 @@ input:focus-visible,
   background: color-mix(in oklch, var(--muted) 42%, transparent);
 }
 
-.source-transcripts h3 {
-  margin: 0;
+.transcript-turn-meta {
+  display: flex;
+  gap: var(--sp-2);
+  align-items: baseline;
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   font-weight: 600;
+}
+
+.transcript-turn-meta time {
+  font-size: var(--fs-sm);
+  font-weight: 400;
 }
 
 .source-transcripts p {
@@ -1219,6 +1226,12 @@ input:focus-visible,
 
 .record-shell[data-state="idle"] {
   width: 64px;
+  height: 52px;
+  overflow: hidden;
+}
+
+.record-shell[data-state="working"] {
+  width: 96px;
   height: 52px;
   overflow: hidden;
 }
