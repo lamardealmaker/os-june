@@ -1,14 +1,25 @@
 import { Mic } from "lucide-react";
-import type { FolderDto, NoteDto, RecordingStatusDto } from "../../lib/tauri";
+import type {
+  FolderDto,
+  NoteDto,
+  RecordingSourceMode,
+  RecordingSourceReadinessDto,
+  RecordingStatusDto,
+} from "../../lib/tauri";
 import { RecorderBar } from "../recorder/RecorderBar";
+import { SourceModeControl } from "../recorder/SourceModeControl";
 import { FolderPicker } from "./FolderPicker";
 
 type NoteEditorProps = {
   note: NoteDto;
   folders: FolderDto[];
   recordingStatus?: RecordingStatusDto;
+  sourceMode: RecordingSourceMode;
+  sourceReadiness?: RecordingSourceReadinessDto;
+  checkingSourceReadiness: boolean;
   onTitleChange: (title: string) => void;
   onContentChange: (content: string) => void;
+  onSourceModeChange: (mode: RecordingSourceMode) => void;
   onStartRecording: () => void;
   onPauseRecording: (sessionId: string) => void;
   onResumeRecording: (sessionId: string) => void;
@@ -23,8 +34,12 @@ export function NoteEditor({
   note,
   folders,
   recordingStatus,
+  sourceMode,
+  sourceReadiness,
+  checkingSourceReadiness,
   onTitleChange,
   onContentChange,
+  onSourceModeChange,
   onStartRecording,
   onPauseRecording,
   onResumeRecording,
@@ -72,7 +87,21 @@ export function NoteEditor({
       />
       {activeTab === "transcription" ? (
         <section className="transcript-view">
-          {note.transcript?.text ? (
+          {note.sourceTranscripts?.length ? (
+            <div className="source-transcripts">
+              {note.sourceTranscripts.map((transcript) => (
+                <section key={transcript.id}>
+                  <h3>
+                    {transcript.source === "system"
+                      ? "System audio"
+                      : "Microphone"}
+                  </h3>
+                  <p>{transcript.text}</p>
+                  {transcript.lastError ? <p>{transcript.lastError}</p> : null}
+                </section>
+              ))}
+            </div>
+          ) : note.transcript?.text ? (
             <p>{note.transcript.text}</p>
           ) : (
             <div className="empty-state">
@@ -95,6 +124,12 @@ export function NoteEditor({
         />
       )}
       <div className="editor-footer">
+        <SourceModeControl
+          value={sourceMode}
+          disabled={!!recordingStatus}
+          readiness={sourceReadiness}
+          onChange={onSourceModeChange}
+        />
         {recordingStatus ? (
           <RecorderBar
             status={recordingStatus}
@@ -106,10 +141,16 @@ export function NoteEditor({
           <button
             type="button"
             className="record-button"
+            disabled={
+              checkingSourceReadiness ||
+              sourceReadiness?.sources.some(
+                (source) => source.required && !source.ready,
+              )
+            }
             onClick={onStartRecording}
           >
             <Mic size={18} />
-            Record
+            {checkingSourceReadiness ? "Checking..." : "Record"}
           </button>
         )}
       </div>

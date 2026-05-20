@@ -6,6 +6,7 @@ import { Sidebar } from "../components/sidebar/Sidebar";
 import {
   assignNoteToFolder,
   bootstrapApp,
+  checkRecordingSourceReadiness,
   createFolder,
   createNote,
   finishRecording,
@@ -21,6 +22,10 @@ import {
   updateNote,
 } from "../lib/tauri";
 import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
+import type {
+  RecordingSourceMode,
+  RecordingSourceReadinessDto,
+} from "../lib/tauri";
 import { createInitialState, notesReducer } from "./state/app-state";
 
 export function App() {
@@ -30,6 +35,11 @@ export function App() {
     createInitialState,
   );
   const [error, setError] = useState<string | null>(null);
+  const [sourceMode, setSourceMode] =
+    useState<RecordingSourceMode>("microphoneOnly");
+  const [sourceReadiness, setSourceReadiness] =
+    useState<RecordingSourceReadinessDto>();
+  const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const selectedNote = state.selectedNote;
 
   useEffect(() => {
@@ -37,6 +47,24 @@ export function App() {
       .then((payload) => dispatch({ type: "bootstrapLoaded", payload }))
       .catch((err: unknown) => setError(messageFromError(err)));
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCheckingSourceReadiness(true);
+    checkRecordingSourceReadiness(sourceMode)
+      .then((readiness) => {
+        if (!cancelled) setSourceReadiness(readiness);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(messageFromError(err));
+      })
+      .finally(() => {
+        if (!cancelled) setCheckingSourceReadiness(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceMode]);
 
   useEffect(() => {
     if (
@@ -124,13 +152,25 @@ export function App() {
   async function handleStartRecording() {
     if (!selectedNote) return;
     try {
-      const recording = await startRecording(selectedNote.id);
+      setCheckingSourceReadiness(true);
+      const readiness = await checkRecordingSourceReadiness(sourceMode);
+      setSourceReadiness(readiness);
+      if (!readiness.ready) {
+        setError(
+          readiness.sources.find((source) => source.required && !source.ready)
+            ?.message ?? "The selected recording sources are not ready.",
+        );
+        return;
+      }
+      const recording = await startRecording(selectedNote.id, sourceMode);
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
       });
     } catch (err) {
       setError(messageFromError(err));
+    } finally {
+      setCheckingSourceReadiness(false);
     }
   }
 
@@ -181,7 +221,7 @@ export function App() {
               .catch((err: unknown) => setError(messageFromError(err)))
           }
         />
-        <div className="app-shell">
+        <div className="workspace-shell">
           <NotesList
             notes={state.notes}
             selectedNoteId={state.selectedNoteId}
@@ -193,10 +233,14 @@ export function App() {
               note={selectedNote}
               folders={state.folders}
               recordingStatus={state.recordingStatus}
+              sourceMode={sourceMode}
+              sourceReadiness={sourceReadiness}
+              checkingSourceReadiness={checkingSourceReadiness}
               onTitleChange={(title) => void handleUpdateNote({ title })}
               onContentChange={(editedContent) =>
                 void handleUpdateNote({ editedContent })
               }
+              onSourceModeChange={setSourceMode}
               onTabChange={(activeTab) =>
                 void updateNote({ noteId: selectedNote.id, activeTab }).then(
                   (note) => dispatch({ type: "noteUpdated", note }),
@@ -253,17 +297,23 @@ export function App() {
 
 function recordingToStatus(recording: {
   id: string;
+  sourceMode?: RecordingStatusDto["sourceMode"];
   state: RecordingStatusDto["state"];
   elapsedMs: number;
   level: RecordingStatusDto["level"];
+  sources?: RecordingStatusDto["sources"];
+  warnings?: RecordingStatusDto["warnings"];
 }): RecordingStatusDto {
   return {
     sessionId: recording.id,
+    sourceMode: recording.sourceMode,
     state: recording.state,
     elapsedMs: recording.elapsedMs,
     level: recording.level,
     silenceWarning: false,
     bytesWritten: 0,
+    sources: recording.sources,
+    warnings: recording.warnings,
   };
 }
 
