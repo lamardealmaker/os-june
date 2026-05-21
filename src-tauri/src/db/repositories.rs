@@ -351,13 +351,25 @@ impl Repositories {
         } else {
             current.title.clone()
         };
-        let content =
-            normalize_generated_addition(&title, current.generated_content.as_deref(), &content);
+        let manual_tail = manual_tail_for_append(
+            current.generated_content.as_deref(),
+            current.edited_content.as_deref(),
+        );
+        let content = normalize_generated_addition(
+            &title,
+            current.generated_content.as_deref(),
+            manual_tail.as_deref(),
+            &content,
+        );
         let next_generated_content =
             append_note_content(current.generated_content, content.clone());
         let next_edited_content = current.edited_content.map(|edited_content| {
-            let content =
-                normalize_generated_addition(&title, Some(edited_content.as_str()), &content);
+            let content = normalize_generated_addition(
+                &title,
+                Some(edited_content.as_str()),
+                manual_tail.as_deref(),
+                &content,
+            );
             append_note_content(Some(edited_content), content)
         });
         sqlx::query(
@@ -1026,9 +1038,15 @@ fn append_note_content(existing: Option<String>, addition: String) -> String {
     }
 }
 
-fn normalize_generated_addition(title: &str, existing: Option<&str>, content: &str) -> String {
+fn normalize_generated_addition(
+    title: &str,
+    existing: Option<&str>,
+    manual_tail: Option<&str>,
+    content: &str,
+) -> String {
     let content = content.trim();
-    let content = strip_duplicate_generated_heading(title, content);
+    let content = strip_manual_tail_echo(manual_tail, content);
+    let content = strip_duplicate_generated_heading(title, manual_tail, content);
     let Some(existing) = existing.map(str::trim).filter(|value| !value.is_empty()) else {
         return content.to_string();
     };
@@ -1041,26 +1059,70 @@ fn normalize_generated_addition(title: &str, existing: Option<&str>, content: &s
     }
 }
 
-fn strip_duplicate_generated_heading<'a>(title: &str, content: &'a str) -> &'a str {
+fn strip_manual_tail_echo<'a>(manual_tail: Option<&str>, content: &'a str) -> &'a str {
+    let Some(manual_tail) = manual_tail.map(str::trim).filter(|value| !value.is_empty()) else {
+        return content;
+    };
+    let Some(rest) = content.strip_prefix(manual_tail) else {
+        return content;
+    };
+    rest.strip_prefix(':').unwrap_or(rest).trim_start()
+}
+
+fn strip_duplicate_generated_heading<'a>(
+    title: &str,
+    manual_tail: Option<&str>,
+    content: &'a str,
+) -> &'a str {
     let Some((heading, rest)) = content.split_once('\n') else {
         return content;
     };
-    let Some(heading_text) = heading.strip_prefix("# ") else {
+    let Some(heading_text) = markdown_heading_text(heading) else {
         return content;
     };
-    if is_duplicate_generated_heading(title, heading_text) {
+    if is_duplicate_generated_heading(title, manual_tail, heading_text) {
         rest.trim_start()
     } else {
         content
     }
 }
 
-fn is_duplicate_generated_heading(title: &str, heading: &str) -> bool {
+fn markdown_heading_text(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let hash_count = trimmed
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+    if hash_count == 0 || hash_count > 6 {
+        return None;
+    }
+
+    trimmed[hash_count..].strip_prefix(' ').map(str::trim)
+}
+
+fn is_duplicate_generated_heading(title: &str, manual_tail: Option<&str>, heading: &str) -> bool {
     let heading = heading.trim();
     let title = title.trim();
     heading.eq_ignore_ascii_case("New note")
         || heading.eq_ignore_ascii_case("Generated note")
         || (!title.is_empty() && heading.eq_ignore_ascii_case(title))
+        || manual_tail
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some_and(|manual_tail| heading.eq_ignore_ascii_case(manual_tail))
+}
+
+fn manual_tail_for_append(generated: Option<&str>, edited: Option<&str>) -> Option<String> {
+    let generated = generated?.trim();
+    let edited = edited?.trim();
+    if generated.is_empty() || edited == generated {
+        return None;
+    }
+    edited
+        .strip_prefix(generated)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 #[derive(Debug, Clone)]

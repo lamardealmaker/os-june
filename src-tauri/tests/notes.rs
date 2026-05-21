@@ -158,6 +158,48 @@ async fn generated_note_strips_existing_note_prefix_when_appending() {
 }
 
 #[tokio::test]
+async fn generated_note_strips_manual_note_echo_when_appending() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    repos
+        .set_generated_note(
+            &note.id,
+            Some("Generated title".to_string()),
+            "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"".to_string(),
+        )
+        .await
+        .expect("first generated note");
+    repos
+        .update_note(
+            &note.id,
+            None,
+            Some(
+                "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"\n\nTest 2".to_string(),
+            ),
+            Some("notes".to_string()),
+        )
+        .await
+        .expect("manual note");
+
+    let updated = repos
+        .set_generated_note(
+            &note.id,
+            None,
+            "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"\n\nTest 2:\n\n## Test 2\n\n- Transcript: \"Tres, dos, uno, hola hola.\""
+                .to_string(),
+        )
+        .await
+        .expect("second generated note");
+
+    assert_eq!(
+        updated.edited_content.as_deref(),
+        Some(
+            "## Transcript (verbatim)\n\n- \"Un, dos, tres, hola hola.\"\n\nTest 2\n\n- Transcript: \"Tres, dos, uno, hola hola.\""
+        )
+    );
+}
+
+#[tokio::test]
 async fn generated_note_appends_to_existing_edited_content() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");
