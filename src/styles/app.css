@@ -1641,9 +1641,7 @@ input:focus-visible,
   align-items: stretch;
   align-self: flex-end;
   justify-content: flex-end;
-  min-height: calc(
-    var(--record-idle-height) + (var(--record-shell-inset) * 2)
-  );
+  min-height: calc(var(--record-idle-height) + (var(--record-shell-inset) * 2));
   padding: var(--record-shell-padding);
   border: var(--record-shell-border) solid var(--border);
   border-radius: var(--r-xl);

@@ -11,9 +11,7 @@ const mocks = vi.hoisted(() => ({
   setDictationShortcut: vi.fn(),
   setDictationMicrophone: vi.fn(),
   listen: vi.fn(),
-  eventHandler: undefined as
-    | ((event: { payload: string }) => void)
-    | undefined,
+  eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
 
 vi.mock("../lib/tauri", () => ({
@@ -98,7 +96,11 @@ describe("DictationSettings", () => {
     render(<DictationSettings />);
 
     await user.click(await screen.findByRole("button", { name: "Change" }));
-    fireEvent.keyDown(window, { code: "ShiftLeft", key: "Shift", shiftKey: true });
+    fireEvent.keyDown(window, {
+      code: "ShiftLeft",
+      key: "Shift",
+      shiftKey: true,
+    });
     expect(
       await screen.findAllByText(
         "Press one non-modifier key with your shortcut.",
@@ -143,12 +145,11 @@ describe("DictationSettings", () => {
       }),
     });
 
-    await user.click(screen.getByRole("button", { name: /Auto-detect|USB Mic/ }));
+    await user.click(
+      screen.getByRole("button", { name: /Auto-detect|USB Mic/ }),
+    );
     await user.click(await screen.findByRole("option", { name: "USB Mic" }));
 
-    expect(mocks.setDictationMicrophone).toHaveBeenCalledWith(
-      "usb",
-      "USB Mic",
-    );
+    expect(mocks.setDictationMicrophone).toHaveBeenCalledWith("usb", "USB Mic");
   });
 });

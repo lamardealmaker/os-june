@@ -78,10 +78,7 @@ const KEY_LABELS: Record<string, string> = {
 
 type ShortcutCaptureResult =
   | {
-      shortcut: Pick<
-        DictationShortcutSetting,
-        "code" | "modifiers" | "label"
-      >;
+      shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label">;
       error?: never;
     }
   | { shortcut?: never; error: string };
@@ -209,7 +206,9 @@ export function DictationSettings() {
       const next = await setDictationMicrophone(id, name);
       setSettings(next);
       setMicOpen(false);
-      setStatus(name ? `Microphone set to ${name}.` : "Microphone set to auto-detect.");
+      setStatus(
+        name ? `Microphone set to ${name}.` : "Microphone set to auto-detect.",
+      );
     } catch (error) {
       setStatus(messageFromError(error));
     }
@@ -320,7 +319,10 @@ export function DictationSettings() {
                             aria-selected={selected}
                             data-selected={selected}
                             onClick={() =>
-                              void selectMicrophone(option.id, option.id ? option.name : undefined)
+                              void selectMicrophone(
+                                option.id,
+                                option.id ? option.name : undefined,
+                              )
                             }
                           >
                             <span>{option.name}</span>
@@ -417,7 +419,9 @@ function keyLabel(code: string, key: string) {
   return key.length === 1 ? key.toUpperCase() : code;
 }
 
-function parseDictationEvent(payload: unknown): DictationHelperEvent | undefined {
+function parseDictationEvent(
+  payload: unknown,
+): DictationHelperEvent | undefined {
   try {
     if (typeof payload === "string") {
       return JSON.parse(payload) as DictationHelperEvent;
