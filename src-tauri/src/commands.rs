@@ -85,15 +85,6 @@ pub async fn get_note(app: AppHandle, request: GetNoteRequest) -> Result<NoteDto
 }
 
 #[tauri::command]
-pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(), AppError> {
-    repositories(&app)
-        .await?
-        .delete_note(&request.note_id)
-        .await?;
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<NoteDto, AppError> {
     Ok(repositories(&app)
         .await?
@@ -104,6 +95,26 @@ pub async fn update_note(app: AppHandle, request: UpdateNoteRequest) -> Result<N
             request.active_tab,
         )
         .await?)
+}
+
+#[tauri::command]
+pub async fn delete_note(app: AppHandle, request: DeleteNoteRequest) -> Result<(), AppError> {
+    let repos = repositories(&app).await?;
+    let audio_paths = repos
+        .audio_artifact_paths_for_note(&request.note_id)
+        .await?;
+    repos.delete_note(&request.note_id).await?;
+    for path in audio_paths {
+        if path.trim().is_empty() {
+            continue;
+        }
+        if let Err(error) = std::fs::remove_file(&path) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                eprintln!("failed to remove deleted note audio {path}: {error}");
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

@@ -1,17 +1,54 @@
+@import "./tokens.css";
+
+@font-face {
+  font-family: "ABC Diatype";
+  src: url("/ABCDiatype-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "ABC Diatype";
+  src: url("/ABCDiatype-Medium.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Martina Plantijn";
+  src: url("/martina-plantijn-light.woff2") format("woff2");
+  font-weight: 300 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("/BerkeleyMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Berkeley Mono";
+  src: url("/BerkeleyMono-Oblique.woff2") format("woff2");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+
 :root {
-  color: #171717;
-  background: #f4f5f7;
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  color: var(--foreground);
+  background: var(--sidebar);
+  font-family: var(--font-sans);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: var(--fs-md);
 }
 
 * {
@@ -20,9 +57,15 @@
 
 body {
   margin: 0;
-  min-width: 900px;
-  height: 100vh;
-  overflow: hidden;
+  min-width: 720px;
+  min-height: 100vh;
+  background: var(--sidebar);
+  color: var(--foreground);
+}
+
+::selection {
+  background: var(--selection);
+  color: var(--selection-foreground);
 }
 
 button,
@@ -32,590 +75,2118 @@ select {
   font: inherit;
 }
 
+button {
+  color: inherit;
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible,
+[role="tab"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.note-title,
+.note-body {
+  outline: none;
+}
+
+.note-title:focus,
+.note-body:focus,
+.note-title:focus-visible,
+.note-body:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+/* Quiet, themed scrollbars — thinner than Fellow's 6px default; only
+ * paints the thumb while hover/scroll. Thumb uses muted-foreground at
+ * low alpha so it matches our warm-neutral palette. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent)
+    transparent;
+}
+*::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 9999px;
+}
+*:hover::-webkit-scrollbar-thumb,
+*:focus-within::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--muted-foreground) 30%, transparent);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+}
+
+/* App shell — sidebar tint outside, white card inset for the main area. */
+
+/* Shell is pinned to the viewport; the two panels each own their scroll. */
 .app-shell {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
+  background: var(--sidebar);
+  transition: grid-template-columns var(--t-med) var(--ease-out);
 }
+
+.app-shell[data-sidebar="collapsed"] {
+  grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr);
+}
+
+/* Sidebar ------------------------------------------------------------ */
 
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 24px 18px;
-  border-right: 1px solid rgba(40, 42, 48, 0.12);
-  background: rgba(255, 255, 255, 0.62);
-  backdrop-filter: blur(18px) saturate(1.35);
-  min-height: 0;
-  overflow: auto;
+  gap: var(--sp-4);
+  min-width: 0;
+  height: 100vh;
+  padding: calc(var(--sp-3) + var(--titlebar-h)) var(--sp-3) var(--sp-3);
+  background: var(--sidebar);
+  color: var(--sidebar-foreground);
+  overflow: hidden;
 }
 
-.sidebar h1 {
-  margin: 0 0 16px;
-  font-size: 19px;
-  font-weight: 650;
+/* Empty strip behind the macOS traffic lights — the sidebar and the inset
+ * card both start below it, so this never overlaps interactive UI and can
+ * stay a full drag region. */
+.titlebar-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--titlebar-h);
+  z-index: 100;
+  background: transparent;
+  -webkit-app-region: drag;
 }
 
-.sidebar button,
-.primary-action {
-  min-height: 36px;
-  border: 1px solid rgba(36, 38, 43, 0.12);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.76);
-  color: #171717;
-  cursor: pointer;
+/* The macOS traffic lights float above this row (the sidebar reserves
+ * --titlebar-h of top padding), so the brand can sit flush-left. */
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  position: relative;
+  padding: 0 var(--sp-1);
+  min-height: 28px;
+  flex-wrap: nowrap;
 }
 
+.sidebar-brand {
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
+  color: var(--foreground);
+  text-decoration: none;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* Two wordmarks ship side by side; CSS picks the right one per theme. */
+.sidebar-brand-img {
+  display: block;
+  height: 14px;
+  width: auto;
+}
+
+.sidebar-brand-img.dark {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .sidebar-brand-img.light {
+    display: none;
+  }
+  .sidebar-brand-img.dark {
+    display: block;
+  }
+}
+
+[data-theme="dark"] .sidebar-brand-img.light {
+  display: none;
+}
+[data-theme="dark"] .sidebar-brand-img.dark {
+  display: block;
+}
+[data-theme="light"] .sidebar-brand-img.light {
+  display: block;
+}
+[data-theme="light"] .sidebar-brand-img.dark {
+  display: none;
+}
+
+.sidebar[data-collapsed="true"] .sidebar-header {
+  padding: var(--sp-1) 0 0;
+  justify-content: center;
+}
+
+.sidebar[data-collapsed="true"] .sidebar-brand {
+  display: none;
+}
+
+/* Collapsed rail: every hit target is the same rounded square. */
+.sidebar[data-collapsed="true"] .sidebar-toggle,
+.sidebar[data-collapsed="true"] .sidebar-search-collapsed,
+.sidebar[data-collapsed="true"] .note-row {
+  width: 38px;
+  height: 38px;
+  margin: 0 auto;
+  /* The expanded rule reserves a 30px column for the overflow menu; in the
+   * collapsed rail that column still occupies grid space (display:none
+   * doesn't collapse the template), which nudged the icon off-center. */
+  grid-template-columns: 1fr;
+  place-items: center;
+  border-radius: var(--r-md);
+}
+
+.sidebar[data-collapsed="true"] .note-row-main {
+  width: 100%;
+  height: 100%;
+}
+
+/* Sidebar toggle — two icons crossfade in the same 18×18 box so the
+ * header layout never reflows. Borrowed pattern from Fellow's
+ * SidebarCollapseTrigger. */
+.sidebar-toggle {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: var(--control-md);
+  height: var(--control-md);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.sidebar-toggle:hover {
+  background: var(--sidebar-accent);
+  color: var(--foreground);
+}
+
+.sidebar-toggle-icon {
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.sidebar-toggle-icon > span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+  will-change: opacity, transform;
+}
+
+.sidebar-toggle-icon > span[data-active="false"] {
+  opacity: 0;
+  transform: scale(0.92);
+}
+
+.sidebar-toggle-icon > span[data-active="true"] {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Icon button — used inside the inset card too. */
 .icon-button {
   display: inline-grid;
   place-items: center;
-  width: 28px;
-  min-width: 28px;
-  min-height: 28px;
+  width: var(--control-md);
+  height: var(--control-md);
   padding: 0;
-}
-
-.icon-button.danger {
-  color: #8c1d18;
-  background: rgba(255, 255, 255, 0.62);
-}
-
-.icon-button.danger:hover {
-  border-color: rgba(185, 28, 28, 0.24);
-  background: rgba(254, 226, 226, 0.86);
-}
-
-.sidebar button:disabled {
-  cursor: default;
-  opacity: 0.52;
-}
-
-.folder-create-form {
-  display: grid;
-  gap: 8px;
-  padding: 10px;
-  border: 1px solid rgba(31, 35, 42, 0.1);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.folder-create-form label {
-  display: grid;
-  gap: 6px;
-  color: #646a73;
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.folder-create-form input {
-  width: 100%;
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid rgba(36, 38, 43, 0.14);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.86);
-  color: #171717;
-}
-
-.folder-create-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.folder-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.folder-nav-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 28px;
-  gap: 6px;
-  align-items: center;
-  border-radius: 8px;
-}
-
-.folder-nav-item > button:first-child {
-  min-width: 0;
-  overflow: hidden;
-  padding: 0 10px;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar .active,
-.folder-nav-item.active > button:first-child {
-  background: rgba(28, 99, 214, 0.12);
-  border-color: rgba(28, 99, 214, 0.18);
-}
-
-.main-panel {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  padding: 32px;
-  overflow: hidden;
-}
-
-.workspace-shell {
-  display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 24px;
-  width: 100%;
-  min-height: 0;
-  flex: 1;
-  overflow: hidden;
-}
-
-.notes-list,
-.notes-empty {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-}
-
-.notes-empty {
-  justify-content: center;
-  align-items: center;
-  border: 1px solid rgba(31, 35, 42, 0.1);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.44);
-}
-
-.note-list-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
-  gap: 8px;
-  align-items: stretch;
-  min-height: 68px;
-  border: 1px solid rgba(31, 35, 42, 0.1);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.note-select-button {
-  display: grid;
-  gap: 5px;
-  padding: 12px;
-  text-align: left;
   border: 0;
+  border-radius: var(--r-sm);
   background: transparent;
-  cursor: pointer;
+  color: var(--muted-foreground);
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
 }
 
-.note-list-item .icon-button {
-  align-self: start;
-  margin: 8px 8px 0 0;
+.icon-button:hover {
+  background: var(--sidebar-accent);
+  color: var(--foreground);
 }
 
-.notes-list .selected {
-  border-color: rgba(28, 99, 214, 0.22);
-  background: rgba(28, 99, 214, 0.1);
-}
+/* Sidebar search ---------------------------------------------------- */
 
-.notes-list span {
-  font-weight: 650;
-}
-
-.notes-list small {
-  color: #646a73;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.primary-action {
-  padding: 0 18px;
-  font-weight: 650;
-}
-
-.recorder-bar {
+/* Search trigger — port of Fellow's SidebarSearchTrigger:
+ * card bg, top-inner highlight, soft drop, 1px ring all in box-shadow;
+ * kbd hint on the right uses muted/60 bg + mono-ish font. */
+.sidebar-search {
   display: grid;
-  grid-template-columns: 88px minmax(220px, 360px) 88px;
-  gap: 14px;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
   align-items: center;
-  padding: 12px;
-  border: 1px solid rgba(28, 31, 38, 0.14);
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.66);
-  box-shadow: 0 18px 48px rgba(33, 37, 45, 0.12);
-  backdrop-filter: blur(22px) saturate(1.35);
+  gap: var(--sp-2);
+  height: 32px;
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--muted-foreground);
+  cursor: text;
+  box-shadow:
+    inset 0 1px 0 0 oklch(100% 0 none / 60%),
+    0 1px 2px 0 oklch(0% 0 none / 4%),
+    0 0 0 1px oklch(0% 0 none / 4%);
+  transition: background-color var(--t-fast) var(--ease-out);
 }
 
-.source-mode-control {
-  display: grid;
-  gap: 8px;
-  align-content: center;
+.sidebar-search:hover {
+  background: color-mix(in oklch, var(--card) 80%, transparent);
 }
 
-.source-mode-options {
-  display: inline-grid;
-  grid-template-columns: repeat(2, minmax(150px, max-content));
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid rgba(31, 35, 42, 0.12);
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.58);
+.sidebar-search input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
 }
 
-.source-mode-option {
+.sidebar-search input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.sidebar-search-kbd {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-height: 34px;
-  padding: 0 12px;
-  border-radius: 8px;
-  color: #343b46;
-  font-size: 13px;
-  font-weight: 620;
-  cursor: pointer;
-}
-
-.source-mode-option input {
-  position: absolute;
-  opacity: 0;
+  gap: 1px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+  color: var(--muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  white-space: nowrap;
   pointer-events: none;
 }
 
-.source-mode-option[data-selected="true"] {
-  color: #0f172a;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 5px 14px rgba(17, 24, 39, 0.08);
+@media (prefers-color-scheme: dark) {
+  .sidebar-search {
+    box-shadow:
+      inset 0 1px 0 0 oklch(100% 0 none / 4%),
+      0 0 0 1px oklch(100% 0 none / 6%);
+  }
 }
 
-.source-mode-option:has(input:disabled) {
-  cursor: not-allowed;
-  opacity: 0.62;
+[data-theme="dark"] .sidebar-search {
+  box-shadow:
+    inset 0 1px 0 0 oklch(100% 0 none / 4%),
+    0 0 0 1px oklch(100% 0 none / 6%);
 }
 
-.source-readiness-warning {
-  max-width: 420px;
-  color: #9a4d00;
-  font-size: 13px;
-  text-align: center;
+.sidebar[data-collapsed="true"] .sidebar-search {
+  display: none;
 }
 
-.source-readiness-warning p {
-  margin: 0;
+/* Primary nav (Dictation, etc.) — Fellow SidebarMenuButton vibe:
+ * full-width, rounded, icon + label, hover wash, active wash. */
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0;
 }
 
-.recorder-meter {
+.sidebar-nav-item {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 18px minmax(0, 1fr);
   align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 30px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
 }
 
-.source-status-list {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+.sidebar-nav-item:hover {
+  background: var(--sidebar-accent);
 }
 
-.source-status {
+.sidebar-nav-item[data-active="true"] {
+  background: var(--sidebar-accent);
+  font-weight: 500;
+}
+
+.sidebar-nav-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--muted-foreground);
+}
+
+.sidebar-nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar[data-collapsed="true"] .sidebar-nav-label {
+  display: none;
+}
+
+.sidebar[data-collapsed="true"] .sidebar-nav-item {
+  width: 38px;
+  height: 38px;
+  margin: 0 auto;
+  grid-template-columns: 1fr;
+  place-items: center;
+  padding: 0;
+}
+
+/* Sidebar section --------------------------------------------------- */
+
+.sidebar-section {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-2);
+  min-height: var(--control-md);
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.section-title-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+}
+
+.section-count {
+  color: var(--muted-foreground);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.section-add {
+  width: var(--control-sm);
+  height: var(--control-sm);
+}
+
+.sidebar[data-collapsed="true"] .section-title-label,
+.sidebar[data-collapsed="true"] .section-add,
+.sidebar[data-collapsed="true"] .section-title,
+.sidebar[data-collapsed="true"] .notes-nav-wrap {
+  /* Collapsed rail = focus mode: hide the note list entirely so only the
+   * sidebar toggle and search remain. Clicking the search icon expands the
+   * sidebar to bring the notes back. */
+  display: none;
+}
+
+/* Notes nav with bottom fade ---------------------------------------- */
+
+.notes-nav-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.notes-nav {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  padding-bottom: var(--sp-6);
+}
+
+/* Top + bottom fades live OUTSIDE the scrolling element so the scrollbar
+ * isn't affected. Both overlay opacities are driven by the inner
+ * element's scroll position via a single scroll-timeline:
+ *   - top fade: hidden at scroll 0, visible from ~15%+
+ *   - bottom fade: visible until ~85%, hidden at scroll 100%
+ * Net effect: top fade appears once content scrolls up, bottom fade
+ * disappears once you reach the end. Both visible in the middle.
+ * Inspired by twilson.net/scroll-mask but uses overlay opacity (not
+ * mask-image), so the scrollbar stays untouched. Graceful fallback
+ * leaves both overlays visible when scroll-timeline isn't supported. */
+.notes-nav-wrap::before,
+.notes-nav-wrap::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 8px;
+  height: 32px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.notes-nav-wrap::before {
+  top: 0;
+  background: linear-gradient(to top, transparent, var(--sidebar) 100%);
+  opacity: 0;
+}
+
+.notes-nav-wrap::after {
+  bottom: 0;
+  background: linear-gradient(to bottom, transparent, var(--sidebar) 100%);
+}
+
+@supports (animation-timeline: scroll()) {
+  .notes-nav-wrap {
+    timeline-scope: --notes-nav-scroll;
+  }
+  .notes-nav {
+    scroll-timeline: --notes-nav-scroll block;
+  }
+  .notes-nav-wrap::before {
+    animation: notes-nav-fade-start linear both;
+    animation-timeline: --notes-nav-scroll;
+  }
+  .notes-nav-wrap::after {
+    animation: notes-nav-fade-end linear both;
+    animation-timeline: --notes-nav-scroll;
+  }
+}
+
+@keyframes notes-nav-fade-start {
+  0% {
+    opacity: 0;
+  }
+  15%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes notes-nav-fade-end {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.note-row {
+  position: relative;
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) 86px;
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  padding-right: var(--sp-1);
+  border-radius: var(--r-md);
+}
+
+.note-row:hover,
+.note-row[data-selected="true"] {
+  background: var(--sidebar-accent);
+}
+
+.note-row-main {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: var(--sp-3);
   align-items: center;
   min-width: 0;
-  padding: 8px 10px;
-  border: 1px solid rgba(31, 35, 42, 0.1);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.48);
-  font-size: 12px;
+  min-height: 30px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
 }
 
-.source-status .waveform {
-  min-height: 20px;
+.note-row-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  color: var(--muted-foreground);
 }
 
-.source-status .waveform span {
-  min-height: 16px;
+.note-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
 }
 
-.elapsed {
-  font-variant-numeric: tabular-nums;
-  font-weight: 650;
+.note-row[data-selected="true"] .note-row-title {
+  font-weight: 500;
 }
 
-.waveform {
-  display: grid;
-  grid-template-columns: repeat(24, 1fr);
-  gap: 3px;
-  align-items: center;
-  min-height: 34px;
+.note-row-menu {
+  display: inline-grid;
+  place-items: center;
+  justify-self: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: transparent;
+  color: var(--muted-foreground);
+  opacity: 0;
+  line-height: 0;
+  transition:
+    opacity var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
 }
 
-.waveform span {
+.note-row-menu svg {
   display: block;
+}
+
+.note-row:hover .note-row-menu,
+.note-row-menu:focus-visible,
+.note-row[data-selected="true"] .note-row-menu {
+  opacity: 1;
+}
+
+.note-row-menu:hover {
+  background: oklch(0% 0 none / 6%);
+  color: var(--foreground);
+}
+
+.sidebar[data-collapsed="true"] .note-row-menu,
+.sidebar[data-collapsed="true"] .note-row-title {
+  display: none;
+}
+
+.sidebar[data-collapsed="true"] .note-row-main {
+  grid-template-columns: 1fr;
+  justify-items: center;
+  padding: var(--sp-2);
+}
+
+/* Context menu ------------------------------------------------------ */
+
+.context-menu {
+  position: fixed;
+  z-index: 50;
+  min-width: 156px;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
   min-height: 28px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #3074f0, #17a672);
-  transform-origin: center;
+  padding: 0 var(--sp-3);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: var(--fs-md);
 }
 
-.done-button {
-  color: #ffffff;
-  border-color: rgba(22, 95, 47, 0.25);
-  background: #168843;
+.context-menu button:hover {
+  background: var(--muted);
 }
 
-.recorder-warning {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: #9a4d00;
-  font-size: 13px;
-  text-align: center;
+.context-menu .destructive {
+  color: var(--destructive);
+}
+
+.context-menu .destructive:hover {
+  background: var(--destructive-soft);
+}
+
+.sidebar-empty {
+  display: grid;
+  place-items: center;
+  min-height: 80px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+}
+
+/* Inset main card --------------------------------------------------- */
+
+/* The white card is pinned: fixed height, never grows past the viewport.
+ * Its body scrolls internally so content is always clipped by the card.
+ *
+ * Uniform tight radius on all four corners so the card nests cleanly
+ * inside the macOS window's curve instead of leaving slivered gaps. */
+.main-panel {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  margin: calc(var(--titlebar-h) + var(--sp-2)) var(--sp-3) var(--sp-3) 0;
+  border-radius: var(--r-window);
+  background: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
+  overflow: hidden;
+}
+
+.app-shell[data-sidebar="collapsed"] .main-panel {
+  margin-left: 0;
+}
+
+.main-panel-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--sp-8) var(--sp-5);
+}
+
+/* Top + bottom fades for the main card. Top is short (28px) since no
+ * sticky header sits there; bottom is taller (96px) so content dissolves
+ * cleanly behind the record button. Same scroll-timeline trick as the
+ * notes rail — fades vanish at the extremes of scroll so end-of-content
+ * isn't clipped. */
+.main-panel::before,
+.main-panel::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.main-panel::before {
+  top: 0;
+  height: 28px;
+  background: linear-gradient(to top, transparent, var(--card) 100%);
+  opacity: 0;
+}
+
+.main-panel::after {
+  bottom: 0;
+  height: 96px;
+  background: linear-gradient(to bottom, transparent, var(--card) 78%);
+}
+
+@supports (animation-timeline: scroll()) {
+  .main-panel {
+    timeline-scope: --main-panel-scroll;
+  }
+  .main-panel-body {
+    scroll-timeline: --main-panel-scroll block;
+  }
+  .main-panel::before {
+    animation: main-panel-fade-start linear both;
+    animation-timeline: --main-panel-scroll;
+  }
+  .main-panel::after {
+    animation: main-panel-fade-end linear both;
+    animation-timeline: --main-panel-scroll;
+  }
+}
+
+@keyframes main-panel-fade-start {
+  0% {
+    opacity: 0;
+  }
+  15%,
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes main-panel-fade-end {
+  0%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.workspace {
+  display: grid;
+  flex: 1;
+  min-width: 0;
 }
 
 .note-editor {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
-  gap: 18px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--sp-5);
   width: 100%;
-  min-height: 0;
-  overflow: hidden;
+  max-width: 720px;
+  /* Fill the workspace but don't exceed it — the previous
+   * `calc(100vh - 60px)` baked a viewport-tall minimum that overflowed
+   * the main-panel-body by a few dozen pixels, letting you scroll past
+   * content. 100% fills the workspace (flex:1 inside main-panel-body)
+   * so the recorder still hangs at the bottom for short notes without
+   * creating phantom scroll. */
+  min-height: 100%;
+  margin: 0 auto;
+  padding: var(--sp-10) 0 var(--sp-5);
 }
 
-.editor-empty {
+.editor-header {
   display: grid;
+  justify-items: start;
+  gap: var(--sp-3);
+}
+
+/* Overline — quiet metadata row sitting above the title. Date is plain
+ * text; the folder chip is the one actionable affordance. Status (when
+ * present) floats to the right end so it never crowds the chip. */
+.note-overline {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--muted-foreground);
+}
+
+.note-overline-date {
+  font-variant-numeric: tabular-nums;
+}
+
+.note-overline-dot {
+  color: var(--muted-foreground);
+  opacity: 0.5;
+}
+
+.folder-chip-wrap {
+  position: relative;
+}
+
+.folder-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  height: 22px;
+  margin: 0 calc(-1 * var(--sp-1));
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.folder-chip:hover,
+.folder-chip[aria-expanded="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.folder-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 60;
+  min-width: 180px;
+  padding: var(--sp-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--popover);
+  box-shadow: var(--shadow-lg);
+}
+
+.folder-popover button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--popover-foreground);
+  font-size: var(--fs-md);
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-popover button:hover {
+  background: var(--muted);
+}
+
+.folder-popover-check {
+  display: inline-grid;
   place-items: center;
-  min-height: 100%;
-  overflow: hidden;
+  width: 14px;
+  color: var(--foreground);
+}
+
+.folder-popover-empty {
+  margin: 0;
+  padding: var(--sp-2);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+}
+
+.note-overline-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto; /* float to the right end of the overline row */
+  color: var(--muted-foreground);
+}
+
+.note-overline-status .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--record);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .note-title {
   width: 100%;
   border: 0;
-  outline: none;
   background: transparent;
-  color: #121417;
-  font-size: 40px;
-  font-weight: 700;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-display);
+  font-weight: 400;
   letter-spacing: 0;
+  line-height: 1.15;
 }
 
-.tabs {
+.note-title::placeholder {
+  color: var(--muted-foreground);
+}
+
+/* Segmented control ------------------------------------------------- */
+
+.segmented {
+  position: relative;
   display: inline-flex;
-  width: max-content;
-  gap: 4px;
-  padding: 4px;
-  border: 1px solid rgba(31, 35, 42, 0.12);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.58);
-}
-
-.tabs button {
-  min-width: 104px;
-  min-height: 32px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.tabs [aria-selected="true"] {
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 5px 14px rgba(17, 24, 39, 0.08);
-}
-
-.folder-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.folder-picker label {
-  display: inline-flex;
-  gap: 6px;
   align-items: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid rgba(31, 35, 42, 0.12);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.58);
-  font-size: 13px;
+  gap: 2px;
+  height: 30px;
+  padding: 3px;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--muted-foreground);
+}
+
+.segmented-indicator {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  border-radius: var(--r-sm);
+  background: var(--card);
+  box-shadow: var(--shadow-sm);
+  transition:
+    transform var(--t-slow) var(--ease-spring),
+    width var(--t-slow) var(--ease-spring);
+  pointer-events: none;
+}
+
+.segmented button {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 0 var(--sp-4);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: inherit;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-out);
+}
+
+.segmented button[aria-pressed="true"] {
+  color: var(--foreground);
+}
+
+.segmented button:hover {
+  color: var(--foreground);
+}
+
+/* Editor body ------------------------------------------------------- */
+
+.editor-content {
+  min-height: 0;
 }
 
 .note-body,
 .transcript-view {
   width: 100%;
-  min-height: 0;
-  border: 1px solid rgba(31, 35, 42, 0.12);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.56);
-  backdrop-filter: blur(18px) saturate(1.22);
+  min-height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
 }
 
 .note-body {
   resize: none;
-  overflow: auto;
-  padding: 20px;
-  line-height: 1.55;
-  outline: none;
+  padding: var(--sp-2) 0 140px;
+  font-size: var(--fs-lg);
+  line-height: 1.6;
+}
+
+.note-body::placeholder {
+  color: var(--muted-foreground);
 }
 
 .transcript-view {
   overflow: auto;
-  padding: 20px;
-  line-height: 1.55;
+  padding: var(--sp-2) 0 140px;
+  font-size: var(--fs-lg);
+  line-height: 1.6;
+}
+
+/* Sits above the first transcript card and shares its max-width so
+ * the copy action right-aligns with the card edge. */
+.transcript-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  max-width: 720px;
+  margin-bottom: var(--sp-2);
+}
+
+.transcript-toolbar::before {
+  content: "";
+}
+
+/* "Copy entire transcript" pill — mirrors the muted-chip language
+ * used by the meta squircles. */
+.transcript-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 70%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.transcript-copy:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.transcript-copy[data-copied] {
+  color: var(--warm-strong);
+}
+
+.transcript-view p {
+  max-width: 720px;
+  margin: 0;
 }
 
 .source-transcripts {
   display: grid;
-  gap: 16px;
+  gap: var(--sp-6);
 }
 
-.transcript-turn {
+.source-transcripts section {
   display: grid;
-  gap: 6px;
+  gap: var(--sp-3);
+  max-width: 720px;
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--card);
 }
 
+/* Squircle chips for source / timestamp metadata — modest radius
+ * keeps them reading as metadata blocks rather than pills, the muted
+ * fill lets them sit quietly against the white card. */
 .transcript-turn-meta {
   display: flex;
-  gap: 8px;
-  align-items: baseline;
-  font-size: 13px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: #4b5563;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
 }
 
-.transcript-turn-meta time {
-  font-size: 12px;
+.transcript-turn-meta > span,
+.transcript-turn-meta > time {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--muted) 75%, transparent);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
   font-weight: 500;
-  color: #7b8493;
+  font-variant-numeric: tabular-nums;
 }
 
 .source-transcripts p {
   margin: 0;
 }
 
-.editor-footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  justify-content: center;
-  align-items: center;
-  min-height: 64px;
+.source-transcript-error {
+  color: color-mix(in oklch, var(--destructive) 70%, var(--foreground));
+  font-size: var(--fs-sm);
 }
 
+/* Note preview (rendered markdown) --------------------------------- */
+
+.note-preview-wrap {
+  position: relative;
+}
+
+.note-body-stack {
+  padding-bottom: 140px;
+}
+
+.note-preview {
+  position: relative;
+  padding: var(--sp-2) 0 0;
+  font-size: var(--fs-lg);
+  line-height: 1.7;
+  color: var(--foreground);
+}
+
+/* Single-level heading for now (no H2). Diatype, medium weight, just a
+ * notch above body. H2 elements that show up from existing markdown render
+ * identically to H1 so the doc stays consistent. */
+.note-preview h1,
+.note-preview h2 {
+  margin: var(--sp-5) 0 var(--sp-2);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+}
+
+.note-preview > h1:first-child,
+.note-preview > h2:first-child {
+  margin-top: 0;
+}
+
+.note-preview p {
+  margin: 0 0 var(--sp-4);
+  color: var(--foreground);
+}
+
+.note-preview ul {
+  margin: 0 0 var(--sp-3);
+  padding-left: var(--sp-6);
+  list-style: disc;
+  color: var(--foreground);
+  line-height: 1.5;
+}
+
+.note-preview li {
+  margin: 0 0 var(--sp-1);
+  padding-left: var(--sp-1);
+}
+
+.note-preview li::marker {
+  color: var(--muted-foreground);
+}
+
+.note-preview ul ul {
+  margin-top: var(--sp-2);
+  list-style: circle;
+}
+
+.note-preview strong {
+  font-weight: 600;
+}
+
+.note-preview:focus {
+  outline: none;
+}
+
+/* Dull placeholder — visible enough to read with caret resting in an empty
+ * editor, quiet enough to disappear next to real text. */
+.note-preview p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  color: color-mix(in oklch, var(--muted-foreground) 42%, transparent);
+  pointer-events: none;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.note-generating {
+  display: inline-block;
+  margin: var(--sp-1) 0 0;
+  font-size: var(--fs-md);
+  font-weight: 500;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--muted-foreground) 80%, transparent) 0%,
+    color-mix(in oklch, var(--foreground) 58%, var(--muted-foreground)) 38%,
+    var(--foreground) 50%,
+    color-mix(in oklch, var(--foreground) 58%, var(--muted-foreground)) 62%,
+    color-mix(in oklch, var(--muted-foreground) 80%, transparent) 100%
+  );
+  background-size: 180% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: note-shimmer 1.05s linear infinite;
+  will-change: background-position;
+}
+
+@keyframes note-shimmer {
+  0% {
+    background-position: 130% 0;
+  }
+  100% {
+    background-position: -70% 0;
+  }
+}
+
+/* Floating selection toolbar ---------------------------------------- */
+
+/* Fellow-style floating toolbar: blurred glass, pill, narrow padding. */
+.selection-toolbar {
+  position: fixed;
+  z-index: 80;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid color-mix(in oklch, var(--border) 60%, transparent);
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--popover) 70%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.7);
+  backdrop-filter: blur(20px) saturate(1.7);
+  color: var(--popover-foreground);
+  box-shadow: var(--shadow-lg);
+  transform: translate(-50%, -100%);
+}
+
+.selection-toolbar button {
+  display: inline-grid;
+  place-items: center;
+  min-width: 30px;
+  height: 28px;
+  padding: 0 var(--sp-2);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.selection-toolbar button:hover {
+  background: color-mix(in oklch, var(--foreground) 12%, transparent);
+  color: var(--foreground);
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Dark glass needs a brighter hover wash to register against the blur. */
+  .selection-toolbar button:hover {
+    background: color-mix(in oklch, white 18%, transparent);
+    color: white;
+  }
+}
+
+[data-theme="dark"] .selection-toolbar button:hover {
+  background: color-mix(in oklch, white 18%, transparent);
+  color: white;
+}
+
+.selection-toolbar .divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--border);
+}
+
+/* Empty / primary actions ------------------------------------------ */
+
+.empty-state {
+  display: grid;
+  gap: var(--sp-4);
+  width: min(100%, 480px);
+  margin-top: var(--sp-10);
+  color: var(--muted-foreground);
+}
+
+.empty-state button,
+.primary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: max-content;
+  min-height: var(--control-lg);
+  padding: 0 var(--sp-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    border-color var(--t-fast) var(--ease-out);
+}
+
+.empty-state button:hover,
+.primary-action:hover {
+  background: var(--muted);
+  border-color: var(--ring);
+}
+
+/* Recorder ---------------------------------------------------------- */
+
+.editor-footer {
+  position: sticky;
+  bottom: var(--sp-5);
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: 56px;
+  padding: 0 var(--sp-4);
+  pointer-events: none;
+}
+
+.editor-footer > * {
+  pointer-events: auto;
+}
+
+.record-stage {
+  position: relative;
+  width: 100%;
+  height: var(--record-idle-height);
+  flex: 0 0 var(--record-idle-height);
+}
+
+.record-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-items: center;
+  min-width: 0;
+}
+
+.record-state-idle,
+.record-state-working {
+  justify-content: center;
+}
+
+.record-state-recorder {
+  justify-content: stretch;
+}
+
+.record-state-working .record-button {
+  width: 84px;
+}
+
+.record-idle {
+  display: flex;
+  align-items: stretch;
+  width: var(--record-idle-width);
+  height: 40px;
+  gap: 2px;
+}
+
+.record-idle .record-button {
+  flex: 0 0 48px;
+  width: 48px;
+  height: 40px;
+}
+
+.record-options-trigger {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 100%;
+  padding: 0 var(--sp-2);
+  border: 0;
+  /* Concentric with the shell's 6px visual inset (14 - 6 = 8). */
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.record-options-trigger:hover,
+.record-options-trigger[aria-expanded="true"] {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+/* Only the icon spins — the button bg/hit area stays put. */
+.record-options-trigger svg {
+  transition: transform 360ms var(--ease-out);
+}
+
+.record-options-trigger[data-rotated="true"] svg {
+  transform: rotate(180deg);
+}
+
+/* Expanding settings panel inside the record shell.
+ *
+ * Uses the modern grid-template-rows: 0fr → 1fr trick to animate to
+ * intrinsic height — no JS measurement, no pop at the end. The shell's
+ * width animates on the same curve so the reveal feels like one motion.
+ * The inner row fades + slides into place a beat after the height
+ * starts opening (opacity transition has a delay only when opening).
+ */
+.record-options-panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  width: 100%;
+  transition: grid-template-rows 360ms var(--ease-out);
+}
+
+.record-options-panel[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+
+.record-options-panel-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Blur + fade + slide reveal. Row resolves out of a soft blur as the
+ * height opens, then crisps up — feels seamless rather than snapping
+ * into focus. Filter duration runs long past the opacity so the focus
+ * pull eases in slowly, no abrupt edge to the resolve. */
+.record-options-row {
+  opacity: 0;
+  filter: blur(8px);
+  transform: translateY(-4px);
+  transition:
+    opacity 260ms var(--ease-out),
+    filter 380ms var(--ease-out),
+    transform 260ms var(--ease-out);
+  will-change: filter, opacity, transform;
+}
+
+.record-options-panel[data-open="true"] .record-options-row {
+  opacity: 1;
+  filter: blur(0);
+  transform: translateY(0);
+  transition:
+    opacity 360ms var(--ease-out) 140ms,
+    filter 520ms var(--ease-out) 140ms,
+    transform 400ms var(--ease-out) 140ms;
+}
+
+/* Settings row sits inside an inner muted card, mirroring the Granola
+ * pattern — a quiet surface within the white pill. */
+.record-options-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+  white-space: nowrap;
+}
+
+.record-options-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+
+.record-options-hint {
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
+
+/* shadcn-style switch */
+.switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: var(--input);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.switch[data-state="checked"] {
+  background: var(--foreground);
+}
+
+.switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.switch-thumb {
+  display: block;
+  width: 14px;
+  height: 14px;
+  margin: 0 2px;
+  border-radius: var(--r-pill);
+  background: var(--card);
+  transform: translateX(0);
+  transition: transform var(--t-fast) var(--ease-out);
+  box-shadow: 0 1px 2px oklch(0% 0 none / 12%);
+}
+
+.switch[data-state="checked"] .switch-thumb {
+  background: var(--background);
+  transform: translateX(14px);
+}
+
+.record-shell {
+  --record-shell-border: 1px;
+  --record-shell-inset: 6px;
+  --record-shell-padding: calc(
+    var(--record-shell-inset) - var(--record-shell-border)
+  );
+  --record-idle-width: 86px;
+  --record-idle-height: 40px;
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  align-self: flex-end;
+  justify-content: flex-end;
+  min-height: calc(
+    var(--record-idle-height) + (var(--record-shell-inset) * 2)
+  );
+  padding: var(--record-shell-padding);
+  border: var(--record-shell-border) solid var(--border);
+  border-radius: var(--r-xl);
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+  overflow: visible;
+  /* Matched 360ms ease-out across width, chevron rotation, and the
+   * grid-template-rows panel expansion. All three move with the same
+   * curve so the shell expands as one motion. */
+  transition:
+    width 360ms var(--ease-out),
+    box-shadow var(--t-med) var(--ease-out);
+  will-change: width;
+}
+
+.record-shell[data-state="idle"] {
+  width: calc(var(--record-idle-width) + (var(--record-shell-inset) * 2));
+  overflow: visible;
+}
+
+.record-shell[data-state="idle"][data-options-open="true"] {
+  width: 320px;
+}
+
+.record-shell[data-state="working"] {
+  width: 96px;
+  height: 52px;
+  overflow: hidden;
+}
+
+.record-shell[data-state="starting"],
+.record-shell[data-state="recording"],
+.record-shell[data-state="paused"],
+.record-shell[data-state="validating"] {
+  /* Sized to fit: pause(40) + 16 + timer(44) + 24 + waveform(38) + 24
+   * + stop(40) + 12 shell border/padding = 238. 2px slack at 240. */
+  width: min(240px, calc(100% - var(--sp-8)));
+  overflow: hidden;
+}
+
+/* Icon-only record trigger. Hover is an inset wash within the shell's
+ * padding, so it reads as a soft pressed surface, not a new outline.
+ * Concentric corners: shell --r-xl (14px) - 6px visual inset = 8px
+ * inner, so the button's radius nests cleanly inside the shell curve. */
 .record-button {
   display: inline-flex;
-  gap: 8px;
   align-items: center;
-  min-height: 44px;
-  padding: 0 18px;
-  border-color: rgba(22, 95, 47, 0.25);
-  background: #168843;
-  color: #ffffff;
-  font-weight: 650;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+
+.record-button:hover {
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+}
+
+.record-button:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.record-button:disabled:hover {
+  background: transparent;
+}
+
+.record-button .record-dot {
+  width: 9px;
+  height: 9px;
+  margin-right: var(--sp-2);
+  border-radius: var(--r-pill);
+  background: var(--record);
+}
+
+.recorder-bar {
+  /* Pause anchored to the left, stop anchored to the right; the meter
+   * occupies the 1fr middle column and distributes timer/waveform via
+   * its own space-between. Margins on the meter create the 16px gap
+   * from pause and the 24px gap to stop. */
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  width: 100%;
+  height: var(--record-idle-height);
+  padding: 0;
+}
+
+.recorder-icon-button,
+.recorder-stop {
+  display: inline-grid;
+  place-items: center;
+  width: var(--record-idle-height);
+  height: var(--record-idle-height);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--muted);
+  color: var(--foreground);
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    transform var(--t-fast) var(--ease-out);
+}
+
+.recorder-icon-button:hover {
+  background: color-mix(in oklch, var(--muted) 88%, var(--foreground));
+}
+
+/* Paused = same warm "resume capture" affordance as the idle record
+ * button. Visually links the two "start audio" states. */
+.recorder-bar[data-state="paused"] .recorder-icon-button:hover {
+  background: var(--warm-soft);
+  color: var(--warm-strong);
+}
+
+.recorder-stop {
+  background: var(--foreground);
+  color: var(--background);
+}
+
+.recorder-stop:hover {
+  background: color-mix(in oklch, var(--foreground) 85%, black);
+}
+
+.recorder-icon-button:disabled,
+.recorder-stop:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.recorder-meter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  margin-left: var(--sp-6); /* 16px from pause */
+  margin-right: var(--sp-8); /* 24px from stop */
+}
+
+.elapsed {
+  min-width: 44px;
+  color: var(--foreground);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+/* Waveform ---------------------------------------------------------- */
+
+.waveform {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: 24px;
+  padding: 0 2px;
+}
+
+.waveform span {
+  display: block;
+  flex: 0 0 auto;
+  width: 3px;
+  /* Animate height directly so the rounded ends stay perfect circles —
+   * scaleY would squash the border-radius into a lozenge at low values. */
+  height: max(3px, calc(20px * var(--bar-fill, 0.15)));
+  border-radius: 999px;
+  background: var(--foreground);
+  opacity: 0.85;
+  transition: height 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: height;
+}
+
+.recorder-bar[data-state="paused"] .waveform span {
+  opacity: 0.32;
+}
+
+.recorder-warning {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  text-align: center;
+}
+
+/* Banners ----------------------------------------------------------- */
+
+.error-banner,
+.recovery-banner {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: var(--fs-md);
 }
 
 .error-banner {
-  margin: 0 0 16px;
-  padding: 10px 12px;
-  border: 1px solid rgba(180, 83, 9, 0.2);
-  border-radius: 8px;
-  color: #8a3e00;
-  background: rgba(255, 247, 237, 0.86);
+  margin: 0 0 var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  border-color: color-mix(in oklch, var(--destructive) 40%, transparent);
+  background: var(--destructive-soft);
+  color: color-mix(in oklch, var(--destructive) 60%, var(--foreground));
 }
 
 .recovery-banner {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--sp-5);
   align-items: center;
-  margin: 0 0 18px;
-  padding: 14px 16px;
-  border: 1px solid rgba(180, 83, 9, 0.18);
-  border-radius: 12px;
-  background: rgba(255, 247, 237, 0.82);
+  margin: 0 0 var(--sp-5);
+  padding: var(--sp-4) var(--sp-5);
 }
 
 .recovery-banner p {
-  margin: 4px 0 0;
-  color: #7a4b18;
-}
-
-.recovery-sources {
-  display: flex;
-  gap: 10px;
-  margin: 8px 0 0;
-  padding: 0;
-  color: #7a4b18;
-  font-size: 13px;
-  list-style: none;
+  margin: var(--sp-1) 0 0;
 }
 
 .recovery-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
-.dialog-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 20;
+.editor-empty,
+.notes-empty {
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: rgba(17, 24, 39, 0.28);
-  backdrop-filter: blur(8px);
+  min-height: 100%;
+  color: var(--muted-foreground);
 }
 
-.confirmation-dialog {
-  display: grid;
-  gap: 14px;
-  width: min(420px, 100%);
-  padding: 20px;
-  border: 1px solid rgba(31, 35, 42, 0.14);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 24px 72px rgba(17, 24, 39, 0.2);
-}
-
-.confirmation-dialog h2,
-.confirmation-dialog p {
-  margin: 0;
-}
-
-.confirmation-dialog h2 {
-  font-size: 18px;
-}
-
-.confirmation-dialog p {
-  color: #4b5563;
-  line-height: 1.45;
-}
-
-.dialog-actions {
+.notes-list {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
+  flex-direction: column;
+  gap: var(--sp-2);
 }
 
-.dialog-actions button {
-  min-height: 36px;
-  padding: 0 14px;
-  border: 1px solid rgba(36, 38, 43, 0.12);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.84);
+.notes-list > button:not(.primary-action) {
+  display: grid;
+  gap: var(--sp-1);
+  min-height: 56px;
+  padding: var(--sp-4);
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--card);
   cursor: pointer;
 }
 
-.dialog-actions .danger-action {
-  color: #ffffff;
-  border-color: rgba(127, 29, 29, 0.26);
-  background: #b42318;
+.notes-list .selected {
+  background: var(--muted);
+}
+
+/* Dictation settings page ------------------------------------------- */
+
+.settings-page {
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--sp-10) 0 var(--sp-12);
+}
+
+.settings-header {
+  display: grid;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-8);
+}
+
+.settings-title {
+  margin: 0;
+  color: var(--foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-display);
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 1.15;
+}
+
+.settings-description {
+  margin: 0;
+  max-width: 560px;
+  color: var(--muted-foreground);
+  font-size: var(--fs-lg);
+  line-height: 1.55;
+}
+
+/* Group label sits outside the card so multiple cards can sit under one
+ * section, like macOS System Settings. */
+.settings-group {
+  display: grid;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-6);
+}
+
+.settings-group-heading {
+  margin: 0;
+  padding: 0 var(--sp-1);
+  color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
+  font-size: var(--fs-md);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+/* Granola-style settings card — quiet rounded container, no heavy chrome. */
+.settings-card {
+  padding: var(--sp-5) var(--sp-6);
+  border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  border-radius: var(--r-lg);
+  background: var(--card);
+}
+
+.settings-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-6);
+  padding: var(--sp-4) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-row:first-child {
+  padding-top: 0;
+}
+
+.settings-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.settings-row-info {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-row-title {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+.settings-row-description {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+}
+
+.settings-row-control {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+/* Keycap frame — wraps one or more keycaps in a 28px-tall container with a
+ * subtle border so the group reads as one shortcut display while each
+ * keycap inside keeps its own filled bg. Matches macOS shortcut UI. */
+.keycap-frame {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 28px;
+  padding: 3px;
+  border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  border-radius: var(--r-md);
+  background: transparent;
+}
+
+.keycap-frame-capturing {
+  justify-content: flex-end;
+  padding: 0 var(--sp-3);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
+
+.keycap {
+  display: inline-grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: var(--muted);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.01em;
+}
+
+/* Buttons — borrow Fellow's Button variants. Secondary uses translucent
+ * secondary bg so hover (alpha shift) stays subtle, not "go to muted". */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  height: 28px;
+  padding: 0 var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color var(--t-fast) var(--ease-out),
+    color var(--t-fast) var(--ease-out);
+}
+
+.btn-secondary {
+  background: color-mix(in oklch, var(--muted) 65%, transparent);
+  color: var(--secondary-foreground);
+}
+
+.btn-secondary:hover {
+  background: var(--muted);
+}
+
+.btn-ghost:hover {
+  background: var(--muted);
+}
+
+/* Select trigger — transparent bg, subtle border only; hover deepens the
+ * border. Chevron absolutely positioned at right. */
+.select-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 220px;
+  height: 32px;
+  padding: 0 32px 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--t-fast) var(--ease-out);
+}
+
+.select-trigger:hover {
+  border-color: color-mix(in oklch, var(--foreground) 25%, transparent);
+}
+
+.select-trigger[aria-expanded="true"] {
+  border-color: color-mix(in oklch, var(--foreground) 25%, transparent);
+}
+
+.select-trigger > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-trigger svg {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-3);
+  transform: translateY(-50%);
+  color: var(--muted-foreground);
+  pointer-events: none;
+}
+
+/* Native-macOS popup behavior: the popover slides up so the currently
+ * selected option lines up with the trigger's position. The vertical
+ * offset is set inline via `style.top` based on the selected index.
+ *
+ * Anchored to BOTH `left: 0` and `right: 0` so the popover width matches
+ * the trigger exactly. Wider items would otherwise spill past the right
+ * edge and reveal the trigger underneath on the left. */
+.select-popover {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  margin: 0;
+  /* sp-1 horizontal + sp-1 vertical padding gives the same inset feel as
+   * the context menu, so item hover wash has a rounded border-radius
+   * with a small breathing strip around it. The slide-up calc accounts
+   * for the vertical padding so the selected item still lines up with
+   * the trigger. */
+  padding: var(--sp-1);
+  list-style: none;
+  border-radius: var(--r-md);
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow:
+    0 12px 32px oklch(0% 0 none / 12%),
+    0 0 0 1px color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
+.select-popover li {
+  list-style: none;
+}
+
+.select-popover button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--sp-1);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--popover-foreground);
+  font-size: var(--fs-md);
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+}
+
+.select-popover button:hover {
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
+}
+
+.select-popover button[data-selected="true"] {
+  color: var(--foreground);
+}
+
+.select-check {
+  display: inline-grid;
+  place-items: center;
+  width: 16px;
+  color: var(--foreground);
 }

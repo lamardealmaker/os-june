@@ -1,15 +1,16 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useReducer, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
+import { DictationSettings } from "../components/dictation/DictationSettings";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
-import { NotesList } from "../components/notes-list/NotesList";
 import { RecoveryBanner } from "../components/recorder/RecoveryBanner";
-import { Sidebar } from "../components/sidebar/Sidebar";
+import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import {
   assignNoteToFolder,
   bootstrapApp,
   checkRecordingSourceReadiness,
   createFolder,
   createNote,
-  deleteFolder,
   deleteNote,
   finishRecording,
   getRecordingStatus,
@@ -23,22 +24,13 @@ import {
   startRecording,
   updateNote,
 } from "../lib/tauri";
-import type {
-  FolderDto,
-  NoteDto,
-  NoteListItemDto,
-  RecordingStatusDto,
-} from "../lib/tauri";
+import type { NoteDto, RecordingStatusDto } from "../lib/tauri";
 import type {
   RecordingSourceMode,
   RecordingSourceReadinessDto,
 } from "../lib/tauri";
 import { shouldPollProcessingStatus } from "./processing-polling";
 import { createInitialState, notesReducer } from "./state/app-state";
-
-type PendingDeletion =
-  | { kind: "note"; note: NoteListItemDto }
-  | { kind: "folder"; folder: FolderDto };
 
 export function App() {
   const [state, dispatch] = useReducer(
@@ -47,17 +39,25 @@ export function App() {
     createInitialState,
   );
   const [error, setError] = useState<string | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [activeView, setActiveView] = useState<SidebarView>("notes");
   const [sourceMode, setSourceMode] =
-    useState<RecordingSourceMode>("microphoneOnly");
+    useState<RecordingSourceMode>("microphonePlusSystem");
   const [sourceReadiness, setSourceReadiness] =
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
-  const [pendingDeletion, setPendingDeletion] = useState<PendingDeletion>();
   const selectedNote = state.selectedNote;
 
   useEffect(() => {
     bootstrapApp()
-      .then((payload) => dispatch({ type: "bootstrapLoaded", payload }))
+      .then(async (payload) => {
+        dispatch({ type: "bootstrapLoaded", payload });
+        const firstNoteId = payload.notes[0]?.id;
+        if (firstNoteId) {
+          const note = await getNote(firstNoteId);
+          dispatch({ type: "noteLoaded", note });
+        }
+      })
       .catch((err: unknown) => setError(messageFromError(err)));
   }, []);
 
@@ -124,20 +124,6 @@ export function App() {
     }
   }
 
-  function handleDeleteNote(note: NoteListItemDto) {
-    setPendingDeletion({ kind: "note", note });
-  }
-
-  async function confirmDeleteNote(note: NoteListItemDto) {
-    try {
-      await deleteNote(note.id);
-      dispatch({ type: "noteDeleted", noteId: note.id });
-      setPendingDeletion(undefined);
-    } catch (err) {
-      setError(messageFromError(err));
-    }
-  }
-
   async function handleSelectFolder(folderId?: string) {
     dispatch({ type: "folderSelected", folderId });
     try {
@@ -148,36 +134,14 @@ export function App() {
     }
   }
 
-  async function handleCreateFolder(name: string) {
+  async function handleCreateFolder() {
+    const name = window.prompt("Folder name");
+    if (!name?.trim()) return;
     try {
       const folder = await createFolder(name);
       dispatch({ type: "folderCreated", folder });
       const response = await listNotes(folder.id);
       dispatch({ type: "notesLoaded", notes: response.items });
-    } catch (err) {
-      setError(messageFromError(err));
-      throw err;
-    }
-  }
-
-  function handleDeleteFolder(folder: FolderDto) {
-    setPendingDeletion({ kind: "folder", folder });
-  }
-
-  async function confirmDeleteFolder(folder: FolderDto, deleteNotes: boolean) {
-    const deletingSelectedFolder = state.selectedFolderId === folder.id;
-    try {
-      await deleteFolder(folder.id, deleteNotes);
-      dispatch({
-        type: "folderDeleted",
-        folderId: folder.id,
-        deleteNotes,
-      });
-      if (deletingSelectedFolder) {
-        const response = await listNotes(undefined);
-        dispatch({ type: "notesLoaded", notes: response.items });
-      }
-      setPendingDeletion(undefined);
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -187,6 +151,25 @@ export function App() {
     try {
       const note = await getNote(noteId);
       dispatch({ type: "noteLoaded", note });
+    } catch (err) {
+      setError(messageFromError(err));
+    }
+  }
+
+  async function handleDeleteNote(noteId: string) {
+    if (state.recordingStatus) {
+      setError("Stop the current recording before deleting a note.");
+      return;
+    }
+    try {
+      await deleteNote(noteId);
+      const response = await listNotes(state.selectedFolderId);
+      dispatch({ type: "notesLoaded", notes: response.items });
+      const nextNoteId = response.items[0]?.id;
+      if (nextNoteId) {
+        const note = await getNote(nextNoteId);
+        dispatch({ type: "noteLoaded", note });
+      }
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -216,21 +199,22 @@ export function App() {
 
   async function handleStartRecording() {
     if (!selectedNote) return;
+    dispatch({
+      type: "recordingStatusChanged",
+      status: startingRecordingStatus(sourceMode),
+    });
     try {
       setCheckingSourceReadiness(true);
       const readiness = await checkRecordingSourceReadiness(sourceMode);
       setSourceReadiness(readiness);
       if (!readiness.ready) {
+        dispatch({ type: "recordingStatusCleared" });
         setError(
           readiness.sources.find((source) => source.required && !source.ready)
             ?.message ?? "The selected recording sources are not ready.",
         );
         return;
       }
-      dispatch({
-        type: "recordingStatusChanged",
-        status: startingRecordingStatus(sourceMode),
-      });
       const recording = await startRecording(selectedNote.id, sourceMode);
       dispatch({
         type: "recordingStatusChanged",
@@ -245,217 +229,159 @@ export function App() {
   }
 
   async function handleFinishRecording(sessionId: string) {
-    if (state.recordingStatus?.sessionId === sessionId) {
+    // Collapse the shell back to idle the instant stop is pressed so it
+    // never lingers wide while the (potentially long) transcribe +
+    // generate pipeline runs. The record button stays disabled via
+    // processingLock until the backend resolves, and the body shimmer
+    // ("Transcribing audio…" → "Generating notes…") tells the user
+    // work is still in flight.
+    dispatch({ type: "recordingStatusCleared" });
+    if (selectedNote) {
       dispatch({
-        type: "recordingStatusChanged",
-        status: { ...state.recordingStatus, state: "validating" },
+        type: "noteUpdated",
+        note: { ...selectedNote, processingStatus: "transcribing" },
       });
     }
     try {
       const result = await finishRecording(sessionId);
       dispatch({ type: "noteUpdated", note: result.note });
-      dispatch({ type: "recordingStatusCleared" });
     } catch (err) {
-      dispatch({ type: "recordingStatusCleared" });
       setError(messageFromError(err));
     }
   }
 
   return (
-    <main className="app-shell">
+    <main
+      className="app-shell"
+      data-sidebar={sidebarCollapsed ? "collapsed" : "expanded"}
+    >
+      <div
+        className="titlebar-drag"
+        aria-hidden
+        data-tauri-drag-region
+        onPointerDown={handleTitlebarPointerDown}
+      />
       <Sidebar
         folders={state.folders}
+        notes={state.notes}
+        selectedNoteId={state.selectedNoteId}
         selectedFolderId={state.selectedFolderId}
-        onCreateFolder={(name) => handleCreateFolder(name)}
-        onDeleteFolder={(folder) => void handleDeleteFolder(folder)}
+        activeView={activeView}
+        onChangeView={setActiveView}
+        onCreateFolder={() => void handleCreateFolder()}
+        onCreateNote={() => void handleCreateNote()}
         onSelectAll={() => void handleSelectFolder(undefined)}
         onSelectFolder={(folderId) => void handleSelectFolder(folderId)}
+        onSelectNote={(noteId) => void handleSelectNote(noteId)}
+        onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed((value) => !value)}
       />
       <section className="main-panel">
-        {error ? <p className="error-banner">{error}</p> : null}
-        <RecoveryBanner
-          recoveries={state.activeRecoveries}
-          onValidate={(sessionId) =>
-            void recoverRecording(sessionId, "validate")
-              .then((note) => {
-                dispatch({ type: "noteUpdated", note });
-                dispatch({ type: "recoveriesUpdated", recoveries: [] });
-              })
-              .catch((err: unknown) => setError(messageFromError(err)))
-          }
-          onDiscard={(sessionId) =>
-            void recoverRecording(sessionId, "discard")
-              .then((note) => {
-                dispatch({ type: "noteUpdated", note });
-                dispatch({ type: "recoveriesUpdated", recoveries: [] });
-              })
-              .catch((err: unknown) => setError(messageFromError(err)))
-          }
-        />
-        <div className="workspace-shell">
-          <NotesList
-            notes={state.notes}
-            selectedNoteId={state.selectedNoteId}
-            emptyTitle={
-              state.selectedFolderId ? "No notes in this folder yet" : undefined
+        <div className="main-panel-body">
+          {error ? <p className="error-banner">{error}</p> : null}
+          <RecoveryBanner
+            recoveries={state.activeRecoveries}
+            onValidate={(sessionId) =>
+              void recoverRecording(sessionId, "validate")
+                .then((note) => {
+                  dispatch({ type: "noteUpdated", note });
+                  dispatch({ type: "recoveriesUpdated", recoveries: [] });
+                })
+                .catch((err: unknown) => setError(messageFromError(err)))
             }
-            onSelectNote={(noteId) => void handleSelectNote(noteId)}
-            onDeleteNote={(note) => void handleDeleteNote(note)}
-            onCreateNote={() => void handleCreateNote()}
+            onDiscard={(sessionId) =>
+              void recoverRecording(sessionId, "discard")
+                .then((note) => {
+                  dispatch({ type: "noteUpdated", note });
+                  dispatch({ type: "recoveriesUpdated", recoveries: [] });
+                })
+                .catch((err: unknown) => setError(messageFromError(err)))
+            }
           />
-          {selectedNote ? (
-            <NoteEditor
-              note={selectedNote}
-              folders={state.folders}
-              recordingStatus={state.recordingStatus}
-              sourceMode={sourceMode}
-              sourceReadiness={sourceReadiness}
-              checkingSourceReadiness={checkingSourceReadiness}
-              onTitleChange={(title) => void handleUpdateNote({ title })}
-              onContentChange={(editedContent) =>
-                void handleUpdateNote({ editedContent })
-              }
-              onSourceModeChange={setSourceMode}
-              onTabChange={(activeTab) =>
-                void updateNote({ noteId: selectedNote.id, activeTab }).then(
-                  (note) => dispatch({ type: "noteUpdated", note }),
-                )
-              }
-              onStartRecording={() => void handleStartRecording()}
-              onPauseRecording={(sessionId) =>
-                void pauseRecording(sessionId).then((status) =>
-                  dispatch({ type: "recordingStatusChanged", status }),
-                )
-              }
-              onResumeRecording={(sessionId) =>
-                void resumeRecording(sessionId).then((status) =>
-                  dispatch({ type: "recordingStatusChanged", status }),
-                )
-              }
-              onFinishRecording={(sessionId) =>
-                void handleFinishRecording(sessionId)
-              }
-              onRetry={() =>
-                selectedNote
-                  ? void retryProcessing(selectedNote.id).then((note) =>
-                      dispatch({ type: "noteUpdated", note }),
-                    )
-                  : undefined
-              }
-              onAssignFolder={(folderId) =>
-                void assignNoteToFolder(selectedNote.id, folderId).then(
-                  (note) => dispatch({ type: "noteUpdated", note }),
-                )
-              }
-              onRemoveFolder={(folderId) =>
-                void removeNoteFromFolder(selectedNote.id, folderId).then(
-                  (note) => dispatch({ type: "noteUpdated", note }),
-                )
-              }
-            />
-          ) : (
-            <section className="editor-empty">
-              <button
-                type="button"
-                className="primary-action"
-                onClick={() => void handleCreateNote()}
-              >
-                New note
-              </button>
-            </section>
-          )}
+          <div className="workspace">
+            {activeView === "dictation" ? (
+              <DictationSettings />
+            ) : selectedNote ? (
+              <NoteEditor
+                note={selectedNote}
+                folders={state.folders}
+                recordingStatus={state.recordingStatus}
+                sourceMode={sourceMode}
+                sourceReadiness={sourceReadiness}
+                checkingSourceReadiness={checkingSourceReadiness}
+                onTitleChange={(title) => void handleUpdateNote({ title })}
+                onContentChange={(sourceNoteId, editedContent) => {
+                  // Blur fired by an editor that was already torn
+                  // down on note-switch — ignore so we don't write
+                  // the old note's content into the new selectedNote.
+                  if (sourceNoteId !== selectedNote.id) return;
+                  void handleUpdateNote({ editedContent });
+                }}
+                onSourceModeChange={setSourceMode}
+                onTabChange={(activeTab) =>
+                  void updateNote({ noteId: selectedNote.id, activeTab }).then(
+                    (note) => dispatch({ type: "noteUpdated", note }),
+                  )
+                }
+                onStartRecording={() => void handleStartRecording()}
+                onPauseRecording={(sessionId) =>
+                  void pauseRecording(sessionId).then((status) =>
+                    dispatch({ type: "recordingStatusChanged", status }),
+                  )
+                }
+                onResumeRecording={(sessionId) =>
+                  void resumeRecording(sessionId).then((status) =>
+                    dispatch({ type: "recordingStatusChanged", status }),
+                  )
+                }
+                onFinishRecording={(sessionId) =>
+                  void handleFinishRecording(sessionId)
+                }
+                onRetry={() =>
+                  selectedNote
+                    ? void retryProcessing(selectedNote.id).then((note) =>
+                        dispatch({ type: "noteUpdated", note }),
+                      )
+                    : undefined
+                }
+                onAssignFolder={(folderId) =>
+                  void assignNoteToFolder(selectedNote.id, folderId).then(
+                    (note) => dispatch({ type: "noteUpdated", note }),
+                  )
+                }
+                onRemoveFolder={(folderId) =>
+                  void removeNoteFromFolder(selectedNote.id, folderId).then(
+                    (note) => dispatch({ type: "noteUpdated", note }),
+                  )
+                }
+              />
+            ) : (
+              <section className="editor-empty">
+                <button
+                  type="button"
+                  className="primary-action"
+                  onClick={() => void handleCreateNote()}
+                >
+                  New note
+                </button>
+              </section>
+            )}
+          </div>
         </div>
       </section>
-      {pendingDeletion ? (
-        <DeletionDialog
-          pendingDeletion={pendingDeletion}
-          onCancel={() => setPendingDeletion(undefined)}
-          onDeleteNote={(note) => void confirmDeleteNote(note)}
-          onDeleteFolder={(folder, deleteNotes) =>
-            void confirmDeleteFolder(folder, deleteNotes)
-          }
-        />
-      ) : null}
     </main>
   );
 }
 
-function DeletionDialog({
-  pendingDeletion,
-  onCancel,
-  onDeleteNote,
-  onDeleteFolder,
-}: {
-  pendingDeletion: PendingDeletion;
-  onCancel: () => void;
-  onDeleteNote: (note: NoteListItemDto) => void;
-  onDeleteFolder: (folder: FolderDto, deleteNotes: boolean) => void;
-}) {
-  if (pendingDeletion.kind === "note") {
-    const title = pendingDeletion.note.title.trim() || "New note";
-    return (
-      <div className="dialog-backdrop">
-        <section
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="delete-note-title"
-          className="confirmation-dialog"
-        >
-          <h2 id="delete-note-title">{`Delete "${title}"?`}</h2>
-          <p>This cannot be undone.</p>
-          <div className="dialog-actions">
-            <button type="button" onClick={onCancel}>
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="danger-action"
-              onClick={() => onDeleteNote(pendingDeletion.note)}
-            >
-              Delete note
-            </button>
-          </div>
-        </section>
-      </div>
+function handleTitlebarPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+  if (event.button !== 0 || event.detail > 1) return;
+  event.preventDefault();
+  void getCurrentWindow()
+    .startDragging()
+    .catch((error: unknown) =>
+      console.warn("Failed to start window drag", error),
     );
-  }
-
-  return (
-    <div className="dialog-backdrop">
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-folder-title"
-        className="confirmation-dialog"
-      >
-        <h2 id="delete-folder-title">
-          {`Delete folder "${pendingDeletion.folder.name}"?`}
-        </h2>
-        <p>
-          You can keep the notes in All Notes or delete the notes in this folder
-          too.
-        </p>
-        <div className="dialog-actions">
-          <button type="button" onClick={onCancel}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => onDeleteFolder(pendingDeletion.folder, false)}
-          >
-            Keep notes
-          </button>
-          <button
-            type="button"
-            className="danger-action"
-            onClick={() => onDeleteFolder(pendingDeletion.folder, true)}
-          >
-            Delete notes too
-          </button>
-        </div>
-      </section>
-    </div>
-  );
 }
 
 function recordingToStatus(recording: {

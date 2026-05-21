@@ -215,6 +215,45 @@ impl Repositories {
         self.get_note(note_id).await
     }
 
+    pub async fn update_note(
+        &self,
+        note_id: &str,
+        title: Option<String>,
+        edited_content: Option<String>,
+        active_tab: Option<String>,
+    ) -> Result<NoteDto, sqlx::Error> {
+        let current = self.get_note(note_id).await?;
+        let next_title = title.unwrap_or(current.title);
+        let next_content = edited_content.or(current.edited_content);
+        let next_tab = active_tab
+            .or(current.active_tab)
+            .unwrap_or_else(|| "notes".to_string());
+
+        sqlx::query(
+            "UPDATE notes SET title = ?, edited_content = ?, active_tab = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(next_title)
+        .bind(next_content)
+        .bind(next_tab)
+        .bind(timestamp())
+        .bind(note_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_note(note_id).await
+    }
+
+    pub async fn audio_artifact_paths_for_note(
+        &self,
+        note_id: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let rows = sqlx::query("SELECT path FROM audio_artifacts WHERE note_id = ?")
+            .bind(note_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|row| row.get("path")).collect())
+    }
+
     pub async fn delete_note(&self, note_id: &str) -> Result<(), sqlx::Error> {
         let mut tx = self.pool.begin().await?;
         delete_note_records(&mut tx, note_id).await?;
@@ -230,6 +269,13 @@ impl Repositories {
         let mut tx = self.pool.begin().await?;
 
         if delete_notes {
+            sqlx::query(
+                "DELETE FROM note_generation_blocks
+                 WHERE note_id IN (SELECT note_id FROM note_folders WHERE folder_id = ?)",
+            )
+            .bind(folder_id)
+            .execute(&mut *tx)
+            .await?;
             sqlx::query(
                 "DELETE FROM generation_results
                  WHERE note_id IN (SELECT note_id FROM note_folders WHERE folder_id = ?)",
@@ -291,34 +337,6 @@ impl Repositories {
             .await?;
 
         tx.commit().await
-    }
-
-    pub async fn update_note(
-        &self,
-        note_id: &str,
-        title: Option<String>,
-        edited_content: Option<String>,
-        active_tab: Option<String>,
-    ) -> Result<NoteDto, sqlx::Error> {
-        let current = self.get_note(note_id).await?;
-        let next_title = title.unwrap_or(current.title);
-        let next_content = edited_content.or(current.edited_content);
-        let next_tab = active_tab
-            .or(current.active_tab)
-            .unwrap_or_else(|| "notes".to_string());
-
-        sqlx::query(
-            "UPDATE notes SET title = ?, edited_content = ?, active_tab = ?, updated_at = ? WHERE id = ?",
-        )
-        .bind(next_title)
-        .bind(next_content)
-        .bind(next_tab)
-        .bind(timestamp())
-        .bind(note_id)
-        .execute(&self.pool)
-        .await?;
-
-        self.get_note(note_id).await
     }
 
     pub async fn set_note_status(
@@ -1194,6 +1212,10 @@ async fn delete_note_records(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     note_id: &str,
 ) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM note_generation_blocks WHERE note_id = ?")
+        .bind(note_id)
+        .execute(&mut **tx)
+        .await?;
     sqlx::query("DELETE FROM generation_results WHERE note_id = ?")
         .bind(note_id)
         .execute(&mut **tx)

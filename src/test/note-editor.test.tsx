@@ -15,7 +15,7 @@ function note(overrides: Partial<NoteDto> = {}): NoteDto {
     folderIds: [],
     createdAt: now,
     updatedAt: now,
-    generatedContent: "Generated body",
+    generatedContent: "## Section one\n\n- First point\n- Second point",
     activeTab: "notes",
     ...overrides,
   };
@@ -23,7 +23,7 @@ function note(overrides: Partial<NoteDto> = {}): NoteDto {
 
 const props = {
   folders: [],
-  sourceMode: "microphoneOnly" as const,
+  sourceMode: "microphonePlusSystem" as const,
   checkingSourceReadiness: false,
   onTitleChange: vi.fn(),
   onContentChange: vi.fn(),
@@ -39,24 +39,19 @@ const props = {
 };
 
 describe("NoteEditor", () => {
-  it("edits title and generated note body", async () => {
+  it("edits title and renders the generated note as a preview", async () => {
     const user = userEvent.setup();
     const onTitleChange = vi.fn();
-    const onContentChange = vi.fn();
     render(
-      <NoteEditor
-        {...props}
-        note={note()}
-        onTitleChange={onTitleChange}
-        onContentChange={onContentChange}
-      />,
+      <NoteEditor {...props} note={note()} onTitleChange={onTitleChange} />,
     );
 
     await user.type(screen.getByLabelText("Note title"), " updated");
-    await user.type(screen.getByLabelText("Generated note"), " extra");
-
     expect(onTitleChange).toHaveBeenCalled();
-    expect(onContentChange).toHaveBeenCalled();
+
+    // The note body is a rendered preview, not an editable textarea.
+    expect(screen.getByText("Section one")).toBeInTheDocument();
+    expect(screen.getByText("First point")).toBeInTheDocument();
   });
 
   it("shows raw transcript in transcription tab", () => {
@@ -119,9 +114,31 @@ describe("NoteEditor", () => {
     const onTabChange = vi.fn();
     render(<NoteEditor {...props} note={note()} onTabChange={onTabChange} />);
 
-    await user.click(screen.getByRole("tab", { name: "Transcription" }));
+    await user.click(screen.getByRole("button", { name: "Transcription" }));
 
     expect(onTabChange).toHaveBeenCalledWith("transcription");
+  });
+
+  it("keeps normal spaces inline while allowing # space to start an H1", async () => {
+    const user = userEvent.setup();
+    render(
+      <NoteEditor
+        {...props}
+        note={note({ generatedContent: "", editedContent: "" })}
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Generated note" });
+
+    await user.click(editor);
+    await user.type(editor, "hello world");
+
+    expect(editor).toHaveTextContent("hello world");
+    expect(editor.querySelector("h1")).toBeNull();
+
+    await user.clear(editor);
+    await user.type(editor, "# Heading");
+
+    expect(editor.querySelector("h1")).toHaveTextContent("Heading");
   });
 
   it("offers retry when transcript failed and audio exists", async () => {
@@ -153,7 +170,7 @@ describe("NoteEditor", () => {
     expect(onRetry).toHaveBeenCalled();
   });
 
-  it("keeps showing working state and hides retry while processing", () => {
+  it("locks the record button and hides retry while processing", () => {
     render(
       <NoteEditor
         {...props}
@@ -173,10 +190,26 @@ describe("NoteEditor", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Working" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Record" })).toBeDisabled();
     expect(screen.getByText("Transcribing audio...")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Retry" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps existing notes visible while showing processing status below them", () => {
+    render(
+      <NoteEditor
+        {...props}
+        note={note({
+          processingStatus: "generating",
+          generatedContent: "Existing notes stay visible",
+          activeTab: "notes",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Existing notes stay visible")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Generating notes");
   });
 });

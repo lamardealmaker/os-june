@@ -1,8 +1,8 @@
 # Feature Specification: Audio Source Modes for Notes
 
-**Feature Branch**: `002-system-audio-source-mode`  
-**Created**: 2026-05-19  
-**Status**: Draft  
+**Feature Branch**: `002-system-audio-source-mode`
+**Created**: 2026-05-19
+**Status**: Draft
 **Input**: User description: "Add a recording source mode control so notes can listen to microphone only or microphone plus system audio. This is a late MVP scope change inspired by the legacy macOS system-audio capture path. Realtime transcription is not required. The app must verify required permissions when the mode changes or when recording starts, and the implementation should be as reliable and failure-proof as possible."
 
 ## User Scenarios & Testing _(mandatory)_

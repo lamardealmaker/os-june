@@ -1,27 +1,22 @@
-import { X } from "lucide-react";
 import type { NoteListItemDto } from "../../lib/tauri";
 
 type NotesListProps = {
   notes: NoteListItemDto[];
   selectedNoteId?: string;
-  emptyTitle?: string;
   onSelectNote: (noteId: string) => void;
-  onDeleteNote: (note: NoteListItemDto) => void;
   onCreateNote: () => void;
 };
 
 export function NotesList({
   notes,
   selectedNoteId,
-  emptyTitle = "No notes yet",
   onSelectNote,
-  onDeleteNote,
   onCreateNote,
 }: NotesListProps) {
   if (notes.length === 0) {
     return (
       <section className="notes-empty">
-        <p>{emptyTitle}</p>
+        <p>No notes yet</p>
         <button type="button" className="primary-action" onClick={onCreateNote}>
           New note
         </button>
@@ -39,31 +34,15 @@ export function NotesList({
         const preview =
           note.preview.trim() || statusLabel(note.processingStatus);
         return (
-          <article
+          <button
             key={note.id}
-            className={
-              selectedNoteId === note.id
-                ? "note-list-item selected"
-                : "note-list-item"
-            }
+            type="button"
+            className={selectedNoteId === note.id ? "selected" : undefined}
+            onClick={() => onSelectNote(note.id)}
           >
-            <button
-              type="button"
-              className="note-select-button"
-              onClick={() => onSelectNote(note.id)}
-            >
-              <span>{title}</span>
-              <small>{preview}</small>
-            </button>
-            <button
-              type="button"
-              className="icon-button danger"
-              aria-label={`Delete note ${title}`}
-              onClick={() => onDeleteNote(note)}
-            >
-              <X size={14} aria-hidden="true" />
-            </button>
-          </article>
+            <span>{title}</span>
+            <small>{preview}</small>
+          </button>
         );
       })}
     </section>
