@@ -130,6 +130,34 @@ async fn generated_note_strips_placeholder_heading_when_appending() {
 }
 
 #[tokio::test]
+async fn generated_note_strips_existing_note_prefix_when_appending() {
+    let repos = repos().await;
+    let note = repos.create_note(None).await.expect("note");
+    repos
+        .set_generated_note(
+            &note.id,
+            Some("Generated title".to_string()),
+            "Hola hola\n\nSegundo test".to_string(),
+        )
+        .await
+        .expect("first generated note");
+
+    let updated = repos
+        .set_generated_note(
+            &note.id,
+            None,
+            "Hola hola\n\nSegundo test\n\nTres, tres, dos, uno.".to_string(),
+        )
+        .await
+        .expect("second generated note");
+
+    assert_eq!(
+        updated.generated_content.as_deref(),
+        Some("Hola hola\n\nSegundo test\n\nTres, tres, dos, uno.")
+    );
+}
+
+#[tokio::test]
 async fn generated_note_appends_to_existing_edited_content() {
     let repos = repos().await;
     let note = repos.create_note(None).await.expect("note");
