@@ -100,13 +100,17 @@ describe("DictationSettings", () => {
     await user.click(await screen.findByRole("button", { name: "Change" }));
     fireEvent.keyDown(window, { code: "ShiftLeft", key: "Shift", shiftKey: true });
     expect(
-      await screen.findByText("Press one non-modifier key with your shortcut."),
-    ).toBeInTheDocument();
+      await screen.findAllByText(
+        "Press one non-modifier key with your shortcut.",
+      ),
+    ).toHaveLength(2);
 
     fireEvent.keyDown(window, { code: "KeyT", key: "t" });
     expect(
-      await screen.findByText("Shortcut must include Cmd, Ctrl, Opt, or Shift."),
-    ).toBeInTheDocument();
+      await screen.findAllByText(
+        "Shortcut must include Cmd, Ctrl, Opt, or Shift.",
+      ),
+    ).toHaveLength(2);
     expect(mocks.setDictationShortcut).not.toHaveBeenCalled();
   });
 
