@@ -41,8 +41,9 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeView, setActiveView] = useState<SidebarView>("notes");
-  const [sourceMode, setSourceMode] =
-    useState<RecordingSourceMode>("microphonePlusSystem");
+  const [sourceMode, setSourceMode] = useState<RecordingSourceMode>(
+    "microphonePlusSystem",
+  );
   const [sourceReadiness, setSourceReadiness] =
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
