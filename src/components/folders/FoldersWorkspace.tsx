@@ -341,11 +341,16 @@ function FolderCard({
         <IconFolder1 size={13} />
       </div>
       <div className="folder-card-body">
-        <h3 className="folder-card-title">{folder.name}</h3>
-        {folder.description ? (
-          <p className="folder-card-meta">{folder.description}</p>
-        ) : null}
+        <div className="folder-card-text">
+          <h3 className="folder-card-title">{folder.name}</h3>
+          {folder.description ? (
+            <p className="folder-card-meta">{folder.description}</p>
+          ) : null}
+        </div>
         <p className="folder-card-footer">
+          <span className="folder-card-footer-icon" aria-hidden>
+            <IconFileText size={11} />
+          </span>
           <span>
             {folderNotes.length}{" "}
             {folderNotes.length === 1 ? "note" : "notes"}
@@ -899,7 +904,8 @@ function FolderEmptyState({
   return (
     <div className="folder-empty-surface" role="group">
       <p className="folder-empty-hint">
-        Nothing in this folder yet.
+        This folder is waiting for its first note. Capture a meeting,
+        a phone call, or a half-formed thought.
       </p>
       <div className="folder-empty-actions">
         {hasNotesElsewhere ? (

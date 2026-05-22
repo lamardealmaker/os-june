@@ -402,7 +402,10 @@ export function App() {
                 onDeleteNote={(noteId) => void handleDeleteNote(noteId)}
               />
             ) : selectedNote ? (
-              <>
+              <div
+                className="note-shell"
+                data-with-crumb={originFolderId ? "true" : undefined}
+              >
                 {originFolderId ? (
                   <NoteFromFolderCrumb
                     folder={state.folders.find(
@@ -489,7 +492,7 @@ export function App() {
                   })();
                 }}
               />
-              </>
+              </div>
             ) : (
               <section className="editor-empty">
                 <button

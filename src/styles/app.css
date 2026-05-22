@@ -860,6 +860,30 @@ input:focus-visible,
   min-width: 0;
 }
 
+/* When a note is opened from a folder we render a sticky crumb bar
+ * above the same NoteEditor used everywhere else. Wrapping both in a
+ * flex column with min-height: 100% means the editor still gets a real
+ * height to grow into — its internal grid (auto / 1fr / auto) keeps
+ * the recorder pinned at the bottom and the header flush at the top. */
+.note-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  min-width: 0;
+}
+
+.note-shell > .note-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+.note-shell[data-with-crumb="true"] > .note-editor {
+  /* The crumb bar already provides top breathing room; tighten the
+   * editor's own padding so the title sits where it would in the
+   * regular notes view, minus the crumb. */
+  padding-top: var(--sp-7);
+}
+
 .note-editor {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -2481,6 +2505,7 @@ input:focus-visible,
   grid-template-columns: 22px minmax(0, 1fr) auto;
   align-items: start;
   column-gap: var(--sp-3);
+  min-height: 96px;
   padding: var(--sp-4);
   border: 1px solid transparent;
   border-radius: var(--r-lg);
@@ -2519,15 +2544,23 @@ input:focus-visible,
   height: 13px;
 }
 
+/* Body is a flex column with `justify-content: space-between` so the
+ * footer always sits at the bottom regardless of whether a description
+ * is present. Card height stays predictable across the grid. */
 .folder-card-body {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  height: 100%;
 }
 
-.folder-card-body > .folder-card-footer {
-  margin-top: var(--sp-3);
+.folder-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .folder-card-title {
@@ -2550,9 +2583,8 @@ input:focus-visible,
   overflow: hidden;
 }
 
-/* Card footer — count + updated date sits below the description (or
- * directly under the title when there's no description) so the card
- * height stays compact and predictable. */
+/* Card footer — pinned to the bottom of the card via the body's
+ * space-between flex. Subtle file icon + count + updated date. */
 .folder-card-footer {
   margin: 0;
   display: inline-flex;
@@ -2560,6 +2592,15 @@ input:focus-visible,
   gap: var(--sp-2);
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
+}
+
+.folder-card-footer-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  color: var(--muted-foreground);
+  opacity: 0.85;
 }
 
 .folder-card-footer-dot {
@@ -2862,8 +2903,11 @@ input:focus-visible,
 
 .folder-empty-hint {
   margin: 0;
+  max-width: 360px;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
+  text-align: center;
+  line-height: 1.5;
 }
 
 .folder-empty-actions {

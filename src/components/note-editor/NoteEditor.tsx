@@ -215,7 +215,7 @@ export function NoteEditor({
               noteId={note.id}
               markdown={content}
               onChange={onContentChange}
-              emptyPlaceholder="Hit record to capture a conversation, or just start typing your thoughts here."
+              emptyPlaceholder="Hit record to capture a conversation, or just start typing your thoughts here"
             />
             {processingLock ? (
               <p
