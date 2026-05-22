@@ -904,8 +904,7 @@ function FolderEmptyState({
   return (
     <div className="folder-empty-surface" role="group">
       <p className="folder-empty-hint">
-        This folder is waiting for its first note. Capture a meeting,
-        a phone call, or a half-formed thought.
+        Capture a meeting, a phone call, or a half-formed thought
       </p>
       <div className="folder-empty-actions">
         {hasNotesElsewhere ? (
