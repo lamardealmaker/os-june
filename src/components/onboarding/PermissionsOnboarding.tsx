@@ -92,6 +92,16 @@ export function PermissionsOnboarding({
     }
   }
 
+  async function requestMicrophonePermission() {
+    try {
+      setStatus(undefined);
+      await dictationHelperCommand({ type: "request_microphone_permission" });
+      await refreshPermissions();
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   const allRequiredAllowed =
     permissionDisplay(permissions.microphone).state === "allowed" &&
     permissionDisplay(permissions.accessibility).state === "allowed";
@@ -130,9 +140,8 @@ export function PermissionsOnboarding({
           title="Microphone"
           description="Required for dictation and note recording."
           status={permissions.microphone}
-          onOpenSettings={() =>
-            void openPermissionPane("microphone", "Microphone")
-          }
+          actionLabel="Allow"
+          onOpenSettings={() => void requestMicrophonePermission()}
         />
         <PermissionStep
           title="Accessibility"
@@ -160,11 +169,13 @@ function PermissionStep({
   title,
   description,
   status,
+  actionLabel = "Open",
   onOpenSettings,
 }: {
   title: string;
   description: string;
   status?: string;
+  actionLabel?: string;
   onOpenSettings: () => void;
 }) {
   const display = permissionDisplay(status);
@@ -184,7 +195,7 @@ function PermissionStep({
           onClick={onOpenSettings}
         >
           <IconSettingsGear1 size={14} />
-          Open
+          {actionLabel}
         </button>
       </div>
     </div>

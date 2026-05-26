@@ -64,6 +64,12 @@ func permissionPayload() -> [String: String] {
     ]
 }
 
+func requestMicrophonePermission() {
+    AVCaptureDevice.requestAccess(for: .audio) { _ in
+        emit("permission_status", permissionPayload())
+    }
+}
+
 func helperBundleIdentifier() -> String {
     Bundle.main.bundleIdentifier ?? "unknown"
 }
@@ -1471,6 +1477,8 @@ func handleCommandLine(_ line: String) {
         }
     case "get_permission_status":
         emit("permission_status", permissionPayload())
+    case "request_microphone_permission":
+        requestMicrophonePermission()
     case "list_microphones":
         runOnMain {
             dictation.emitMicrophones()

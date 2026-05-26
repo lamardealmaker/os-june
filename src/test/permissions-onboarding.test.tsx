@@ -56,7 +56,7 @@ describe("PermissionsOnboarding", () => {
     });
   });
 
-  it("shows permission status and opens the matching settings panes", async () => {
+  it("shows permission status, requests microphone permission, and opens settings panes", async () => {
     const user = userEvent.setup();
 
     render(<PermissionsOnboarding open onComplete={vi.fn()} />);
@@ -80,17 +80,20 @@ describe("PermissionsOnboarding", () => {
     expect(await screen.findByText("Allowed")).toBeInTheDocument();
     expect(screen.getAllByText("Needs permission")).toHaveLength(2);
 
+    await user.click(screen.getByRole("button", { name: /Allow/ }));
     const openButtons = screen.getAllByRole("button", { name: /Open/ });
     await user.click(openButtons[0]);
     await user.click(openButtons[1]);
-    await user.click(openButtons[2]);
 
-    expect(mocks.openPrivacySettings).toHaveBeenNthCalledWith(1, "microphone");
+    expect(mocks.dictationHelperCommand).toHaveBeenCalledWith({
+      type: "request_microphone_permission",
+    });
+    expect(mocks.openPrivacySettings).not.toHaveBeenCalledWith("microphone");
     expect(mocks.openPrivacySettings).toHaveBeenNthCalledWith(
-      2,
+      1,
       "accessibility",
     );
-    expect(mocks.openPrivacySettings).toHaveBeenNthCalledWith(3, "systemAudio");
+    expect(mocks.openPrivacySettings).toHaveBeenNthCalledWith(2, "systemAudio");
   });
 
   it("lets users finish onboarding even before every permission is granted", async () => {
