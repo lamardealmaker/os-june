@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub const DEFAULT_GENERATION_PROVIDER: &str = crate::providers::VENICE_PROVIDER;
-const DEFAULT_VENICE_GENERATION_MODEL: &str = "zai-org-glm-5";
 const INCREMENTAL_NOTE_INSTRUCTIONS: &str = "You write one incremental markdown note block from a newly captured transcript. Use only the new transcript plus optional new manual notes. Existing generated note content is context only: do not repeat, summarize, rewrite, or reformat it. Manual notes are context only unless they add facts; do not output manual note labels as headings, bullets, titles, or section names. Do not add wrapper headings such as Note, Generated note, Transcript, or Summary. Preserve the speaker's language unless the source material is mixed-language. Return only the new note block to append.";
 
 #[derive(Debug, Clone)]
@@ -55,10 +54,7 @@ async fn generate_with_venice(
             "VENICE_API_KEY is required for Venice note generation.",
         )
     })?;
-    let model = std::env::var("VENICE_GENERATION_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_VENICE_GENERATION_MODEL.to_string());
+    let model = crate::providers::venice_generation_model();
     let title_hint = request.title.trim();
     let source_text = generation_source_text(
         request.existing_generated_note.as_deref(),

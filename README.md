@@ -26,12 +26,14 @@ pnpm tauri:dev
 
 Restart `pnpm tauri:dev` after changing `.env`; the running Tauri process does not reload provider configuration.
 
-Optional model overrides:
+Optional initial model defaults:
 
 ```sh
 export VENICE_TRANSCRIPTION_MODEL=nvidia/parakeet-tdt-0.6b-v3
 export VENICE_GENERATION_MODEL=zai-org-glm-5
 ```
+
+The Settings tab can load available Venice models and save separate selections for transcription/dictation and note generation. Saved selections are stored in the app config directory and take effect for new provider requests.
 
 The app data directory is resolved by Tauri at runtime. In development, inspect the platform app data path for:
 

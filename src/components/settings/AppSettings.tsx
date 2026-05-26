@@ -7,15 +7,21 @@ import { useEffect, useRef, useState } from "react";
 import {
   dictationHelperCommand,
   dictationSettings,
+  listVeniceModels,
   openPrivacySettings,
+  providerModelSettings,
   setDictationMicrophone,
+  setVeniceModel,
 } from "../../lib/tauri";
 import type {
   DictationHelperEvent,
   DictationMicrophoneDeviceDto,
   DictationSettingsDto,
+  ProviderModelMode,
+  ProviderModelSettingsDto,
   RecordingSourceMode,
   RecordingSourceReadinessDto,
+  VeniceModelDto,
 } from "../../lib/tauri";
 import { Switch } from "../ui/Switch";
 
@@ -32,6 +38,11 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
     },
   },
   microphone: {},
+};
+
+const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
+  transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+  generationModel: "zai-org-glm-5",
 };
 
 type AppSettingsProps = {
@@ -54,6 +65,14 @@ export function AppSettings({
 }: AppSettingsProps) {
   const [settings, setSettings] =
     useState<DictationSettingsDto>(DEFAULT_SETTINGS);
+  const [providerSettings, setProviderSettings] =
+    useState<ProviderModelSettingsDto>(DEFAULT_PROVIDER_MODELS);
+  const [veniceModels, setVeniceModels] = useState<
+    Record<ProviderModelMode, VeniceModelDto[]>
+  >({
+    transcription: [],
+    generation: [],
+  });
   const [microphones, setMicrophones] = useState<
     DictationMicrophoneDeviceDto[]
   >([]);
@@ -76,8 +95,15 @@ export function AppSettings({
         const response = await dictationSettings();
         if (cancelled) return;
         setSettings(response.settings);
+        const modelResponse = await providerModelSettings();
+        if (cancelled) return;
+        setProviderSettings(modelResponse.settings);
         await requestMicrophones();
         await requestPermissionStatus();
+        await Promise.all([
+          requestVeniceModels("transcription"),
+          requestVeniceModels("generation"),
+        ]);
       } catch (error) {
         if (!cancelled) setStatus(messageFromError(error));
       }
@@ -131,6 +157,18 @@ export function AppSettings({
     }
   }
 
+  async function requestVeniceModels(mode: ProviderModelMode) {
+    try {
+      const response = await listVeniceModels(mode);
+      setVeniceModels((models) => ({
+        ...models,
+        [mode]: response.models,
+      }));
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   function handleHelperEvent(helperEvent: DictationHelperEvent) {
     if (helperEvent.type === "microphone_devices") {
       setMicrophones(helperEvent.payload?.devices ?? []);
@@ -164,6 +202,20 @@ export function AppSettings({
     }
   }
 
+  async function selectVeniceModel(mode: ProviderModelMode, modelId: string) {
+    try {
+      const next = await setVeniceModel(mode, modelId);
+      setProviderSettings(next);
+      setStatus(
+        mode === "transcription"
+          ? "Transcription model updated."
+          : "Note generation model updated.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
   async function openPermissionPane(
     pane: "microphone" | "accessibility",
     label: string,
@@ -186,6 +238,14 @@ export function AppSettings({
     microphoneOptions.findIndex(
       (option) => (option.id ?? "") === (settings.microphone.id ?? ""),
     ),
+  );
+  const transcriptionOptions = modelOptions(
+    veniceModels.transcription,
+    providerSettings.transcriptionModel,
+  );
+  const generationOptions = modelOptions(
+    veniceModels.generation,
+    providerSettings.generationModel,
   );
 
   return (
@@ -295,6 +355,51 @@ export function AppSettings({
         </div>
       </section>
 
+      <section className="settings-group" aria-labelledby="models-heading">
+        <div className="settings-group-header">
+          <h2 id="models-heading" className="settings-group-heading">
+            Venice models
+          </h2>
+          <button
+            type="button"
+            className="btn btn-ghost settings-group-action"
+            onClick={() =>
+              void Promise.all([
+                requestVeniceModels("transcription"),
+                requestVeniceModels("generation"),
+              ])
+            }
+          >
+            <IconArrowRotateClockwise size={14} />
+            Refresh
+          </button>
+        </div>
+        <div className="settings-card">
+          <div className="settings-rows">
+            <ModelRow
+              title="Transcription"
+              description="Used for note recordings and dictation."
+              value={providerSettings.transcriptionModel}
+              options={transcriptionOptions}
+              ariaLabel="Transcription model"
+              onChange={(modelId) =>
+                void selectVeniceModel("transcription", modelId)
+              }
+            />
+            <ModelRow
+              title="Note generation"
+              description="Used to write generated notes from transcripts."
+              value={providerSettings.generationModel}
+              options={generationOptions}
+              ariaLabel="Note generation model"
+              onChange={(modelId) =>
+                void selectVeniceModel("generation", modelId)
+              }
+            />
+          </div>
+        </div>
+      </section>
+
       <section
         className="settings-group"
         aria-labelledby="app-permissions-heading"
@@ -335,6 +440,62 @@ export function AppSettings({
       </section>
     </div>
   );
+}
+
+function ModelRow({
+  title,
+  description,
+  value,
+  options,
+  ariaLabel,
+  onChange,
+}: {
+  title: string;
+  description: string;
+  value: string;
+  options: VeniceModelDto[];
+  ariaLabel: string;
+  onChange: (modelId: string) => void;
+}) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-info">
+        <h3 className="settings-row-title">{title}</h3>
+        <p className="settings-row-description">{description}</p>
+      </div>
+      <div className="settings-row-control settings-model-control">
+        <select
+          className="settings-select"
+          aria-label={ariaLabel}
+          value={value}
+          onChange={(event) => onChange(event.currentTarget.value)}
+        >
+          {options.map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.name === model.id
+                ? model.id
+                : `${model.name} (${model.id})`}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function modelOptions(models: VeniceModelDto[], selectedModel: string) {
+  if (models.some((model) => model.id === selectedModel)) {
+    return models;
+  }
+  return [
+    {
+      id: selectedModel,
+      name: selectedModel,
+      modelType: "",
+      traits: [],
+    },
+    ...models,
+  ];
 }
 
 function PermissionRow({

@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_TRANSCRIPTION_PROVIDER: &str = crate::providers::VENICE_PROVIDER;
-const DEFAULT_VENICE_TRANSCRIPTION_MODEL: &str = "nvidia/parakeet-tdt-0.6b-v3";
 
 #[derive(Debug, Clone)]
 pub struct TranscriptionRequest {
@@ -71,10 +70,7 @@ async fn transcribe_with_venice(
         .and_then(|value| value.to_str())
         .unwrap_or("recording.wav")
         .to_string();
-    let model = std::env::var("VENICE_TRANSCRIPTION_MODEL")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_VENICE_TRANSCRIPTION_MODEL.to_string());
+    let model = crate::providers::venice_transcription_model();
     let audio_part = Part::bytes(audio_bytes)
         .file_name(filename)
         .mime_str(transcription_audio_mime(&request.audio_path))
