@@ -102,6 +102,29 @@ describe("Sidebar — Folders nav item", () => {
     const button = screen.getByRole("button", { name: /Folders/ });
     expect(button.textContent?.replace(/\s/g, "")).toBe("Folders");
   });
+
+  it("does not render a separate dictation settings view", () => {
+    render(
+      <Sidebar
+        folders={folders}
+        notes={notes}
+        selectedNoteId={undefined}
+        selectedFolderId={undefined}
+        activeView="settings"
+        onChangeView={vi.fn()}
+        onCreateFolder={vi.fn()}
+        onCreateNote={vi.fn()}
+        onSelectAll={vi.fn()}
+        onSelectFolder={vi.fn()}
+        onSelectNote={vi.fn()}
+        onDeleteNote={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Dictation" }),
+    ).not.toBeInTheDocument();
+  });
 });
 
 describe("FoldersWorkspace — list view", () => {
@@ -193,9 +216,7 @@ describe("FoldersWorkspace — detail view", () => {
     const props = baseProps();
     render(<FoldersWorkspace {...props} selectedFolderId="folder-1" />);
 
-    await user.click(
-      screen.getByRole("button", { name: /^Folders$/ }),
-    );
+    await user.click(screen.getByRole("button", { name: /^Folders$/ }));
     expect(props.onSelectFolder).toHaveBeenCalledWith(undefined);
   });
 

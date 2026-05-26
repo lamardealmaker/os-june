@@ -2,7 +2,7 @@ use crate::domain::types::AppError;
 use crate::providers::{
     configured_provider,
     transcription::{transcribe_saved_audio, TranscriptionProviderResult, TranscriptionRequest},
-    MOCK_PROVIDER,
+    VENICE_PROVIDER,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
@@ -117,9 +117,8 @@ impl<'de> Deserialize<'de> for DictationShortcutSetting {
 
         let value = serde_json::Value::deserialize(deserializer)?;
         if let Some(shortcut) = value.as_str() {
-            return DictationShortcutPreset::from_id(shortcut)
-                .map(DictationShortcutSetting::from)
-                .ok_or_else(|| serde::de::Error::custom("unknown shortcut preset"));
+            return legacy_shortcut_setting(shortcut)
+                .ok_or_else(|| serde::de::Error::custom("unknown legacy shortcut"));
         }
 
         let shortcut: ShortcutSettingValue =
@@ -135,7 +134,15 @@ impl<'de> Deserialize<'de> for DictationShortcutSetting {
 
 impl DictationShortcutSetting {
     fn bare_fn() -> Self {
-        DictationShortcutPreset::BareFn.into()
+        Self {
+            key_code: 0,
+            code: "Fn".to_string(),
+            modifiers: DictationShortcutModifiers {
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Fn".to_string(),
+        }
     }
 }
 
@@ -163,68 +170,6 @@ pub enum DictationActivationMode {
     #[default]
     PushToTalk,
     Toggle,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum DictationShortcutPreset {
-    BareFn,
-    FnSpace,
-    ControlOptionSpace,
-}
-
-impl DictationShortcutPreset {
-    fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "bare_fn" | "fn" => Some(Self::BareFn),
-            "fn_space" => Some(Self::FnSpace),
-            "control_option_space" => Some(Self::ControlOptionSpace),
-            _ => None,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::BareFn => "Fn",
-            Self::FnSpace => "Fn+Space",
-            Self::ControlOptionSpace => "Ctrl+Opt+Space",
-        }
-    }
-}
-
-impl From<DictationShortcutPreset> for DictationShortcutSetting {
-    fn from(shortcut: DictationShortcutPreset) -> Self {
-        match shortcut {
-            DictationShortcutPreset::BareFn => Self {
-                key_code: 0,
-                code: "Fn".to_string(),
-                modifiers: DictationShortcutModifiers {
-                    function: true,
-                    ..DictationShortcutModifiers::default()
-                },
-                label: shortcut.label().to_string(),
-            },
-            DictationShortcutPreset::FnSpace => Self {
-                key_code: 0x31,
-                code: "Space".to_string(),
-                modifiers: DictationShortcutModifiers {
-                    function: true,
-                    ..DictationShortcutModifiers::default()
-                },
-                label: shortcut.label().to_string(),
-            },
-            DictationShortcutPreset::ControlOptionSpace => Self {
-                key_code: 0x31,
-                code: "Space".to_string(),
-                modifiers: DictationShortcutModifiers {
-                    control: true,
-                    option: true,
-                    ..DictationShortcutModifiers::default()
-                },
-                label: shortcut.label().to_string(),
-            },
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -357,6 +302,32 @@ impl DictationShortcutInput {
 
 fn is_bare_fn_input(code: &str, modifiers: &DictationShortcutModifiers) -> bool {
     code.eq_ignore_ascii_case("Fn") && modifiers.function && no_standard_modifiers(modifiers)
+}
+
+fn legacy_shortcut_setting(id: &str) -> Option<DictationShortcutSetting> {
+    match id {
+        "bare_fn" | "fn" => Some(DictationShortcutSetting::bare_fn()),
+        "fn_space" => Some(DictationShortcutSetting {
+            key_code: 0x31,
+            code: "Space".to_string(),
+            modifiers: DictationShortcutModifiers {
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Fn+Space".to_string(),
+        }),
+        "control_option_space" => Some(DictationShortcutSetting {
+            key_code: 0x31,
+            code: "Space".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                option: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Opt+Space".to_string(),
+        }),
+        _ => None,
+    }
 }
 
 fn is_bare_fn_shortcut(shortcut: &DictationShortcutSetting) -> bool {
@@ -878,10 +849,10 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
 }
 
 fn dictation_transcription_provider(provider: String) -> Result<String, AppError> {
-    if provider == MOCK_PROVIDER {
+    if provider != VENICE_PROVIDER {
         return Err(AppError::new(
             "dictation_provider_not_configured",
-            "Dictation requires real transcription. Set OPENAI_API_KEY in .env or in the shell that launches Tauri.",
+            "Dictation requires Venice transcription. Set VENICE_API_KEY in .env or in the shell that launches Tauri.",
         ));
     }
     Ok(provider)
@@ -1205,11 +1176,11 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_shortcut_preset() {
+    fn deserializes_legacy_shortcut_string() {
         let settings: DictationSettings = serde_json::from_str(
             r#"{"shortcut":"control_option_space","activationMode":"toggle","microphone":{"id":null,"name":null}}"#,
         )
-        .expect("preset should deserialize");
+        .expect("legacy shortcut should deserialize");
 
         assert_eq!(settings.shortcut.label, "Ctrl+Opt+Space");
         assert!(settings.shortcut.modifiers.control);
@@ -1234,11 +1205,11 @@ mod tests {
     }
 
     #[test]
-    fn deserializes_bare_fn_shortcut_preset() {
+    fn deserializes_legacy_bare_fn_shortcut_string() {
         let settings: DictationSettings = serde_json::from_str(
             r#"{"shortcut":"bare_fn","activationMode":"push_to_talk","microphone":{"id":null,"name":null}}"#,
         )
-        .expect("preset should deserialize");
+        .expect("legacy shortcut should deserialize");
 
         assert_eq!(settings.shortcut, DictationShortcutSetting::bare_fn());
         assert!(is_bare_fn_shortcut(&settings.shortcut));
@@ -1344,7 +1315,7 @@ mod tests {
         let outcome = outcome_from_transcription_result(Ok(TranscriptionProviderResult {
             text: "Paste this transcript.".to_string(),
             language: Some("en".to_string()),
-            provider: "mock".to_string(),
+            provider: crate::providers::VENICE_PROVIDER.to_string(),
         }));
 
         assert_eq!(
@@ -1381,19 +1352,19 @@ mod tests {
     }
 
     #[test]
-    fn dictation_rejects_mock_provider() {
-        let err = dictation_transcription_provider(MOCK_PROVIDER.to_string())
-            .expect_err("dictation should not paste mock transcripts");
+    fn dictation_rejects_non_venice_provider() {
+        let err = dictation_transcription_provider("mock".to_string())
+            .expect_err("dictation should only accept Venice transcripts");
 
         assert_eq!(err.code, "dictation_provider_not_configured");
     }
 
     #[test]
-    fn dictation_accepts_real_provider() {
+    fn dictation_accepts_venice_provider() {
         assert_eq!(
-            dictation_transcription_provider(crate::providers::OPENAI_PROVIDER.to_string())
-                .expect("openai should be accepted"),
-            crate::providers::OPENAI_PROVIDER
+            dictation_transcription_provider(crate::providers::VENICE_PROVIDER.to_string())
+                .expect("venice should be accepted"),
+            crate::providers::VENICE_PROVIDER
         );
     }
 }
