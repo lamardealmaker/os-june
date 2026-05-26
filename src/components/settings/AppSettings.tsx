@@ -376,45 +376,6 @@ export function AppSettings({
         </div>
       </section>
 
-      <section className="settings-group" aria-labelledby="models-heading">
-        <div className="settings-group-header">
-          <h2 id="models-heading" className="settings-group-heading">
-            Venice models
-          </h2>
-          <button
-            type="button"
-            className="btn btn-ghost settings-group-action"
-            onClick={() =>
-              void Promise.all([
-                requestVeniceModels("transcription"),
-                requestVeniceModels("generation"),
-              ])
-            }
-          >
-            <IconArrowRotateClockwise size={14} />
-            Refresh
-          </button>
-        </div>
-        <div className="settings-card">
-          <div className="settings-rows">
-            <ModelRow
-              title="Transcription"
-              description="Used for note recordings and dictation."
-              value={providerSettings.transcriptionModel}
-              options={transcriptionOptions}
-              onOpen={() => openModelPicker("transcription")}
-            />
-            <ModelRow
-              title="Note generation"
-              description="Used to write generated notes from transcripts."
-              value={providerSettings.generationModel}
-              options={generationOptions}
-              onOpen={() => openModelPicker("generation")}
-            />
-          </div>
-        </div>
-      </section>
-
       <ModelPickerDialog
         open={!!pickerMode}
         mode={pickerMode ?? "transcription"}
@@ -467,6 +428,45 @@ export function AppSettings({
               onOpenSettings={() =>
                 void openPermissionPane("accessibility", "Accessibility")
               }
+            />
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-group" aria-labelledby="models-heading">
+        <div className="settings-group-header">
+          <h2 id="models-heading" className="settings-group-heading">
+            Venice models
+          </h2>
+          <button
+            type="button"
+            className="btn btn-ghost settings-group-action"
+            onClick={() =>
+              void Promise.all([
+                requestVeniceModels("transcription"),
+                requestVeniceModels("generation"),
+              ])
+            }
+          >
+            <IconArrowRotateClockwise size={14} />
+            Refresh
+          </button>
+        </div>
+        <div className="settings-card">
+          <div className="settings-rows">
+            <ModelRow
+              title="Transcription"
+              description="Used for note recordings and dictation."
+              value={providerSettings.transcriptionModel}
+              options={transcriptionOptions}
+              onOpen={() => openModelPicker("transcription")}
+            />
+            <ModelRow
+              title="Note generation"
+              description="Used to write generated notes from transcripts."
+              value={providerSettings.generationModel}
+              options={generationOptions}
+              onOpen={() => openModelPicker("generation")}
             />
           </div>
         </div>
@@ -542,14 +542,7 @@ function ModelPickerDialog({
     const query = search.trim().toLowerCase();
     if (!query) return options;
     return options.filter((model) =>
-      [
-        model.name,
-        model.id,
-        model.description,
-        model.privacy,
-        ...model.traits,
-        ...model.capabilities,
-      ]
+      [model.name, model.id, model.description, model.privacy, ...model.traits]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
@@ -605,13 +598,20 @@ function ModelPickerDialog({
                   {selected ? <IconCheckmark1Small size={15} /> : null}
                 </span>
               </span>
-              <span className="model-picker-description">
-                {model.description ?? "No description available."}
-              </span>
-              <span className="model-picker-facts">
-                <span>{pricingLabel(model)}</span>
-                <span>{contextLabel(model)}</span>
-              </span>
+              {model.description ? (
+                <span className="model-picker-description">
+                  {model.description}
+                </span>
+              ) : null}
+              {(() => {
+                const context = contextLabel(model);
+                return (
+                  <span className="model-picker-facts">
+                    <span>{pricingLabel(model)}</span>
+                    {context ? <span>{context}</span> : null}
+                  </span>
+                );
+              })()}
               <ModelBadges model={model} />
             </button>
           );
@@ -674,7 +674,7 @@ function modelBadges(model: VeniceModelDto) {
         : "privacy",
     });
   }
-  for (const trait of [...model.traits, ...model.capabilities]) {
+  for (const trait of model.traits) {
     const normalized = trait.toLowerCase();
     if (normalized.includes("uncensored")) {
       badges.push({ label: "Uncensored", kind: "uncensored" });
@@ -683,12 +683,6 @@ function modelBadges(model: VeniceModelDto) {
       normalized.includes("anonymized")
     ) {
       badges.push({ label: "Anon", kind: "anon" });
-    } else if (normalized.includes("reasoning")) {
-      badges.push({ label: "Reasoning", kind: "capability" });
-    } else if (normalized.includes("function")) {
-      badges.push({ label: "Tools", kind: "capability" });
-    } else if (normalized.includes("vision")) {
-      badges.push({ label: "Vision", kind: "capability" });
     }
   }
   return uniqueBadges(badges);
@@ -759,7 +753,7 @@ function formatUsd(value: number) {
 }
 
 function contextLabel(model: VeniceModelDto) {
-  if (!model.contextTokens) return "Context unavailable";
+  if (!model.contextTokens) return undefined;
   if (model.contextTokens >= 1_000_000) {
     return `${trimNumber(model.contextTokens / 1_000_000)}M context`;
   }

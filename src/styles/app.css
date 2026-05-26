@@ -2394,11 +2394,6 @@ input:focus-visible,
   color: oklch(0.46 0.14 45);
 }
 
-.model-badge[data-kind="capability"] {
-  background: color-mix(in oklch, var(--success) 13%, transparent);
-  color: var(--success);
-}
-
 .model-picker-dialog {
   gap: var(--sp-4);
 }

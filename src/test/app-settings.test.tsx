@@ -98,7 +98,7 @@ describe("AppSettings", () => {
                 privacy: "private",
                 pricing: { input: { usd: 0.15 }, output: { usd: 0.6 } },
                 contextTokens: 32768,
-                traits: ["reasoning"],
+                traits: [],
                 capabilities: ["supportsFunctionCalling"],
               },
               {
@@ -241,6 +241,8 @@ describe("AppSettings", () => {
     expect((await screen.findAllByText("Uncensored")).length).toBeGreaterThan(
       0,
     );
+    expect(screen.queryByText("Tools")).not.toBeInTheDocument();
+    expect(screen.queryByText("Reasoning")).not.toBeInTheDocument();
     await user.click(
       await screen.findByRole("option", { name: /Venice Uncensored/ }),
     );
