@@ -44,23 +44,26 @@ The app data directory is resolved by Tauri at runtime. In development, inspect 
 
 ## Dictation
 
-Dictation is paste-only: it does not create notes or store transcript records. Press the configured global shortcut from another app to start microphone dictation, press it again to stop, and OS Scribe transcribes the temporary m4a recording through the same Rust transcription provider used by note recording. On success, the helper temporarily places the transcript on the clipboard, activates the last focused external app, posts Cmd+V, and restores the previous clipboard when possible.
+Dictation is paste-only: it does not create notes or store transcript records. Choose a dictation shortcut and an activation mode in Settings. Push-to-talk records while the shortcut is held and stops when it is released. Toggle starts or stops dictation each time the shortcut is pressed. OS Scribe transcribes the temporary m4a recording through the same Rust transcription provider used by note recording. On success, the helper temporarily places the transcript on the clipboard, activates the last focused external app, posts Cmd+V, and restores the previous clipboard when possible.
 
 Dictation requires Venice transcription. If `VENICE_API_KEY` is not visible to the Tauri process, dictation reports a configuration error. During development, put the key in `.env` or export it in the shell before running `pnpm tauri:dev`.
 
-The default shortcut is `Fn+Space`. If macOS cannot register it, the app falls back to `Ctrl+Opt+Space`. The Dictation settings page can save another shortcut with Cmd, Ctrl, Opt, or Shift plus one supported non-modifier key.
+The default shortcut is bare `Fn`/Globe and the default activation mode is `Push-to-talk`. If macOS opens emoji, input-source, or system dictation UI when pressing Fn, set System Settings > Keyboard > "Press Fn key to" or "Press Globe key to" to `Do Nothing`. Settings records the shortcut you press, including bare `Fn`/Globe, `Fn+Space`, or another shortcut with Cmd, Ctrl, Opt, Shift, or Fn plus one supported non-modifier key. Push-to-talk for custom shortcuts depends on macOS exposing both key-down and key-up events for that shortcut.
 
 Manual validation:
 
 1. Launch with `VENICE_API_KEY` configured.
 2. Grant microphone and Accessibility permissions.
 3. Focus a text field in TextEdit, VS Code, or a browser.
-4. Press the configured shortcut to start dictation.
-5. Speak a short sentence.
-6. Press the configured shortcut again to stop.
-7. Confirm the HUD transitions through listening, transcribing, pasting, and success.
-8. Confirm the transcript appears in the original focused text field.
-9. Select a microphone in Dictation settings, restart, and confirm the selection persists.
+4. In Settings, press Change, record `Fn`/Globe, and choose `Push-to-talk`.
+5. Hold Fn/Globe to start dictation.
+6. Speak a short sentence.
+7. Release Fn/Globe to stop, transcribe, and paste.
+8. Switch activation mode to `Toggle`.
+9. Press Fn/Globe once to start dictation, then press it again to stop.
+10. Confirm the HUD transitions through listening, transcribing, pasting, and success.
+11. Confirm the transcript appears in the original focused text field.
+12. Select a microphone in Settings, restart, and confirm the selection persists.
 
 ## macOS Audio Permission Debugging
 

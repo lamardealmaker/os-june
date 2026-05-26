@@ -10,13 +10,18 @@ import {
   listVeniceModels,
   openPrivacySettings,
   providerModelSettings,
+  setDictationActivationMode,
   setDictationMicrophone,
+  setDictationShortcut,
   setVeniceModel,
 } from "../../lib/tauri";
 import type {
+  DictationActivationMode,
   DictationHelperEvent,
   DictationMicrophoneDeviceDto,
   DictationSettingsDto,
+  DictationShortcutModifiers,
+  DictationShortcutSetting,
   ProviderModelMode,
   ProviderModelSettingsDto,
   RecordingSourceMode,
@@ -24,22 +29,34 @@ import type {
   VeniceModelDto,
 } from "../../lib/tauri";
 import { Dialog } from "../ui/Dialog";
+import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
+
+const EMPTY_MODIFIERS: DictationShortcutModifiers = {
+  command: false,
+  control: false,
+  option: false,
+  shift: false,
+  function: false,
+};
 
 const DEFAULT_SETTINGS: DictationSettingsDto = {
   shortcut: {
-    code: "Space",
-    label: "Fn+Space",
+    code: "Fn",
+    label: "Fn",
     modifiers: {
-      command: false,
-      control: false,
-      option: false,
-      shift: false,
+      ...EMPTY_MODIFIERS,
       function: true,
     },
   },
+  activationMode: "push_to_talk",
   microphone: {},
 };
+
+const ACTIVATION_MODE_OPTIONS = [
+  { value: "push_to_talk", label: "Push-to-talk" },
+  { value: "toggle", label: "Toggle" },
+] as const;
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
   transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
@@ -78,6 +95,8 @@ export function AppSettings({
     DictationMicrophoneDeviceDto[]
   >([]);
   const [permissions, setPermissions] = useState<DictationPermissionStatus>({});
+  const [capturingShortcut, setCapturingShortcut] = useState(false);
+  const [shortcutError, setShortcutError] = useState<string>();
   const [status, setStatus] = useState<string>();
   const [micOpen, setMicOpen] = useState(false);
   const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
@@ -144,6 +163,18 @@ export function AppSettings({
     };
   }, [micOpen]);
 
+  useEffect(() => {
+    if (!capturingShortcut) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        void cancelShortcutCapture();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [capturingShortcut]);
+
   async function requestMicrophones() {
     try {
       await dictationHelperCommand({ type: "list_microphones" });
@@ -187,6 +218,36 @@ export function AppSettings({
       });
       return;
     }
+    if (helperEvent.type === "fn_monitor_unavailable") {
+      setStatus(
+        helperEvent.payload?.message ?? "Fn/Globe shortcut is unavailable.",
+      );
+      return;
+    }
+    if (helperEvent.type === "shortcut_capture_started") {
+      setStatus("Press the shortcut to record it.");
+      return;
+    }
+    if (helperEvent.type === "shortcut_capture_error") {
+      const message =
+        helperEvent.payload?.message ?? "Shortcut could not be captured.";
+      setShortcutError(message);
+      setStatus(message);
+      return;
+    }
+    if (helperEvent.type === "shortcut_captured") {
+      const shortcut = shortcutFromCapturePayload(
+        helperEvent.payload?.shortcut,
+      );
+      if (!shortcut) {
+        setShortcutError("Shortcut capture returned invalid data.");
+        setStatus("Shortcut capture returned invalid data.");
+        return;
+      }
+      setShortcutError(undefined);
+      void saveShortcut(shortcut);
+      return;
+    }
     if (helperEvent.type === "error") {
       setStatus(helperEvent.payload?.message ?? "Settings helper failed.");
     }
@@ -199,6 +260,54 @@ export function AppSettings({
       setMicOpen(false);
       setStatus(
         name ? `Microphone set to ${name}.` : "Microphone set to auto-detect.",
+      );
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function saveShortcut(
+    shortcut: Pick<DictationShortcutSetting, "code" | "modifiers" | "label">,
+  ) {
+    try {
+      const next = await setDictationShortcut(shortcut);
+      setSettings(next);
+      setCapturingShortcut(false);
+      setStatus(`Shortcut set to ${next.shortcut.label}.`);
+    } catch (error) {
+      setShortcutError(messageFromError(error));
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function startShortcutCapture() {
+    setShortcutError(undefined);
+    setCapturingShortcut(true);
+    try {
+      await dictationHelperCommand({ type: "start_shortcut_capture" });
+    } catch (error) {
+      setCapturingShortcut(false);
+      setShortcutError(messageFromError(error));
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function cancelShortcutCapture() {
+    setCapturingShortcut(false);
+    setShortcutError(undefined);
+    try {
+      await dictationHelperCommand({ type: "cancel_shortcut_capture" });
+    } catch (error) {
+      setStatus(messageFromError(error));
+    }
+  }
+
+  async function selectActivationMode(activationMode: DictationActivationMode) {
+    try {
+      const next = await setDictationActivationMode(activationMode);
+      setSettings(next);
+      setStatus(
+        `Activation mode set to ${activationModeLabel(next.activationMode)}.`,
       );
     } catch (error) {
       setStatus(messageFromError(error));
@@ -278,6 +387,65 @@ export function AppSettings({
         </p>
         {status ? <p className="settings-status">{status}</p> : null}
       </header>
+
+      <section className="settings-group" aria-labelledby="dictation-heading">
+        <h2 id="dictation-heading" className="settings-group-heading">
+          Dictation
+        </h2>
+        <div className="settings-card">
+          <div className="settings-rows">
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Shortcut</h3>
+                <p className="settings-row-description">
+                  Press Change, then press Fn/Globe or any supported modifier
+                  shortcut.
+                </p>
+                {shortcutError ? (
+                  <p className="settings-row-error">{shortcutError}</p>
+                ) : null}
+              </div>
+              <div className="settings-row-control">
+                <KeycapShortcut
+                  label={settings.shortcut.label}
+                  capturing={capturingShortcut}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    if (capturingShortcut) {
+                      void cancelShortcutCapture();
+                    } else {
+                      void startShortcutCapture();
+                    }
+                  }}
+                >
+                  {capturingShortcut ? "Cancel" : "Change"}
+                </button>
+              </div>
+            </div>
+
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <h3 className="settings-row-title">Activation mode</h3>
+                <p className="settings-row-description">
+                  Choose whether the shortcut records while held or toggles on
+                  each press.
+                </p>
+              </div>
+              <div className="settings-row-control">
+                <SegmentedControl
+                  value={settings.activationMode}
+                  options={ACTIVATION_MODE_OPTIONS}
+                  onValueChange={selectActivationMode}
+                  aria-label="Dictation activation mode"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
 
       <section className="settings-group" aria-labelledby="audio-heading">
         <h2 id="audio-heading" className="settings-group-heading">
@@ -826,6 +994,36 @@ function PermissionRow({
   );
 }
 
+function KeycapShortcut({
+  label,
+  capturing,
+}: {
+  label: string;
+  capturing: boolean;
+}) {
+  if (capturing) {
+    return (
+      <span className="keycap-frame keycap-frame-capturing">
+        Press shortcut...
+      </span>
+    );
+  }
+  const keys = label.split("+").filter(Boolean);
+  return (
+    <span className="keycap-frame" aria-label={`Shortcut ${label}`}>
+      {keys.map((key, idx) => (
+        <kbd key={`${key}-${idx}`} className="keycap">
+          {key}
+        </kbd>
+      ))}
+    </span>
+  );
+}
+
+function activationModeLabel(mode: DictationActivationMode) {
+  return mode === "toggle" ? "Toggle" : "Push-to-talk";
+}
+
 function parseDictationEvent(
   payload: unknown,
 ): DictationHelperEvent | undefined {
@@ -840,6 +1038,33 @@ function parseDictationEvent(
     return undefined;
   }
   return undefined;
+}
+
+function shortcutFromCapturePayload(
+  shortcut: unknown,
+): Pick<DictationShortcutSetting, "code" | "modifiers" | "label"> | undefined {
+  if (!shortcut || typeof shortcut !== "object") return undefined;
+
+  const value = shortcut as Partial<DictationShortcutSetting>;
+  const modifiers = value.modifiers;
+  if (
+    typeof value.code !== "string" ||
+    typeof value.label !== "string" ||
+    !modifiers ||
+    typeof modifiers.command !== "boolean" ||
+    typeof modifiers.control !== "boolean" ||
+    typeof modifiers.option !== "boolean" ||
+    typeof modifiers.shift !== "boolean" ||
+    typeof modifiers.function !== "boolean"
+  ) {
+    return undefined;
+  }
+
+  return {
+    code: value.code,
+    label: value.label,
+    modifiers,
+  };
 }
 
 function stringPayloadValue(value: unknown) {

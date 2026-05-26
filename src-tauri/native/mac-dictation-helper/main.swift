@@ -145,6 +145,522 @@ func runOnMain(_ work: @escaping () -> Void) {
     }
 }
 
+struct ShortcutModifiers {
+    let command: Bool
+    let control: Bool
+    let option: Bool
+    let shift: Bool
+    let function: Bool
+
+    init(
+        command: Bool = false,
+        control: Bool = false,
+        option: Bool = false,
+        shift: Bool = false,
+        function: Bool = false
+    ) {
+        self.command = command
+        self.control = control
+        self.option = option
+        self.shift = shift
+        self.function = function
+    }
+
+    init(payload: [String: Any]) {
+        command = payload["command"] as? Bool ?? false
+        control = payload["control"] as? Bool ?? false
+        option = payload["option"] as? Bool ?? false
+        shift = payload["shift"] as? Bool ?? false
+        function = payload["function"] as? Bool ?? false
+    }
+
+    var hasAny: Bool {
+        command || control || option || shift || function
+    }
+
+    var isBareFunction: Bool {
+        function && !command && !control && !option && !shift
+    }
+
+    var payload: [String: Bool] {
+        [
+            "command": command,
+            "control": control,
+            "option": option,
+            "shift": shift,
+            "function": function,
+        ]
+    }
+
+    var labelParts: [String] {
+        [
+            command ? "Cmd" : nil,
+            control ? "Ctrl" : nil,
+            option ? "Opt" : nil,
+            shift ? "Shift" : nil,
+            function ? "Fn" : nil,
+        ].compactMap { $0 }
+    }
+}
+
+struct MonitoredShortcut {
+    let keyCode: UInt16
+    let code: String
+    let label: String
+    let modifiers: ShortcutModifiers
+
+    static let bareFn = MonitoredShortcut(
+        keyCode: 0,
+        code: "Fn",
+        label: "Fn",
+        modifiers: ShortcutModifiers(function: true)
+    )
+
+    init(keyCode: UInt16, code: String, label: String, modifiers: ShortcutModifiers) {
+        self.keyCode = keyCode
+        self.code = code
+        self.label = label
+        self.modifiers = modifiers
+    }
+
+    init?(payload: [String: Any]) {
+        let code = payload["code"] as? String ?? ""
+        let label = payload["label"] as? String ?? ""
+        let modifiersPayload = payload["modifiers"] as? [String: Any] ?? [:]
+        let keyCode: UInt16
+
+        if let rawKeyCode = payload["keyCode"] as? UInt16 {
+            keyCode = rawKeyCode
+        } else if let rawKeyCode = payload["keyCode"] as? Int, rawKeyCode >= 0, rawKeyCode <= Int(UInt16.max) {
+            keyCode = UInt16(rawKeyCode)
+        } else if let rawKeyCode = payload["keyCode"] as? NSNumber {
+            keyCode = rawKeyCode.uint16Value
+        } else {
+            return nil
+        }
+
+        guard !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return nil
+        }
+
+        self.keyCode = keyCode
+        self.code = code
+        self.label = label
+        self.modifiers = ShortcutModifiers(payload: modifiersPayload)
+    }
+
+    var isBareFn: Bool {
+        code.caseInsensitiveCompare("Fn") == .orderedSame
+            && modifiers.function
+            && !modifiers.command
+            && !modifiers.control
+            && !modifiers.option
+            && !modifiers.shift
+    }
+
+    var payload: [String: Any] {
+        [
+            "keyCode": Int(keyCode),
+            "code": code,
+            "label": label,
+            "modifiers": modifiers.payload,
+        ]
+    }
+}
+
+final class ShortcutKeyMonitor {
+    static let shared = ShortcutKeyMonitor()
+
+    private var globalMonitor: Any?
+    private var eventTap: CFMachPort?
+    private var eventTapRunLoopSource: CFRunLoopSource?
+    private var shortcut = MonitoredShortcut.bareFn
+    private var shortcutIsDown = false
+    private var isCapturingShortcut = false
+    private var pendingBareFnCapture: DispatchWorkItem?
+
+    private init() {}
+
+    func start() {
+        guard globalMonitor == nil, eventTap == nil else {
+            return
+        }
+
+        startGlobalMonitor()
+        startEventTap()
+
+        if globalMonitor == nil, eventTap == nil {
+            emit("fn_monitor_unavailable", [
+                "message": "Could not monitor Fn/Globe key events.",
+            ])
+        }
+    }
+
+    fileprivate func enableEventTap() {
+        guard let eventTap else {
+            return
+        }
+
+        CGEvent.tapEnable(tap: eventTap, enable: true)
+    }
+
+    fileprivate func handle(flags: CGEventFlags) {
+        if isCapturingShortcut {
+            handleCapture(flags: flags)
+            return
+        }
+
+        if shortcut.isBareFn {
+            observe(isDown: flags.contains(.maskSecondaryFn))
+            return
+        }
+
+        if shortcutIsDown && !modifiersMatch(flags, shortcut.modifiers) {
+            observe(isDown: false)
+        }
+    }
+
+    fileprivate func handle(type: CGEventType, event: CGEvent) {
+        if isCapturingShortcut {
+            handleCapture(type: type, keyCode: keyCode(from: event), flags: event.flags)
+            return
+        }
+
+        guard !shortcut.isBareFn else {
+            if type == .flagsChanged {
+                handle(flags: event.flags)
+            }
+            return
+        }
+
+        switch type {
+        case .keyDown:
+            guard keyCode(from: event) == shortcut.keyCode,
+                  modifiersMatch(event.flags, shortcut.modifiers)
+            else {
+                return
+            }
+            observe(isDown: true)
+        case .keyUp:
+            guard keyCode(from: event) == shortcut.keyCode else {
+                return
+            }
+            observe(isDown: false)
+        case .flagsChanged:
+            handle(flags: event.flags)
+        default:
+            break
+        }
+    }
+
+    func setShortcut(_ nextShortcut: MonitoredShortcut) {
+        shortcut = nextShortcut
+        shortcutIsDown = false
+    }
+
+    func startShortcutCapture() {
+        isCapturingShortcut = true
+        shortcutIsDown = false
+        cancelPendingBareFnCapture()
+        emit("shortcut_capture_started")
+    }
+
+    func cancelShortcutCapture() {
+        isCapturingShortcut = false
+        cancelPendingBareFnCapture()
+        emit("shortcut_capture_cancelled")
+    }
+
+    private func startGlobalMonitor() {
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.flagsChanged, .keyDown, .keyUp], handler: { [weak self] event in
+            self?.handle(event: event)
+        })
+    }
+
+    private func startEventTap() {
+        let mask = CGEventMask(
+            (1 << CGEventType.flagsChanged.rawValue)
+                | (1 << CGEventType.keyDown.rawValue)
+                | (1 << CGEventType.keyUp.rawValue)
+        )
+        let userInfo = Unmanaged.passUnretained(self).toOpaque()
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .tailAppendEventTap,
+            options: .listenOnly,
+            eventsOfInterest: mask,
+            callback: shortcutEventTapCallback,
+            userInfo: userInfo
+        ) else {
+            return
+        }
+
+        eventTap = tap
+        eventTapRunLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        if let eventTapRunLoopSource {
+            CFRunLoopAddSource(CFRunLoopGetMain(), eventTapRunLoopSource, .commonModes)
+        }
+        CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    private func handle(event: NSEvent) {
+        if isCapturingShortcut {
+            handleCapture(type: event.type, keyCode: UInt16(event.keyCode), flags: event.modifierFlags)
+            return
+        }
+
+        if shortcut.isBareFn {
+            guard event.type == .flagsChanged else {
+                return
+            }
+            observe(isDown: event.modifierFlags.contains(.function))
+            return
+        }
+
+        switch event.type {
+        case .keyDown:
+            guard UInt16(event.keyCode) == shortcut.keyCode,
+                  modifiersMatch(event.modifierFlags, shortcut.modifiers)
+            else {
+                return
+            }
+            observe(isDown: true)
+        case .keyUp:
+            guard UInt16(event.keyCode) == shortcut.keyCode else {
+                return
+            }
+            observe(isDown: false)
+        case .flagsChanged:
+            if shortcutIsDown && !modifiersMatch(event.modifierFlags, shortcut.modifiers) {
+                observe(isDown: false)
+            }
+        default:
+            break
+        }
+    }
+
+    private func handleCapture(type: CGEventType, keyCode: UInt16, flags: CGEventFlags) {
+        switch type {
+        case .keyDown:
+            captureShortcut(keyCode: keyCode, modifiers: shortcutModifiers(from: flags))
+        case .flagsChanged:
+            handleCapture(flags: flags)
+        default:
+            break
+        }
+    }
+
+    private func handleCapture(type: NSEvent.EventType, keyCode: UInt16, flags: NSEvent.ModifierFlags) {
+        switch type {
+        case .keyDown:
+            captureShortcut(keyCode: keyCode, modifiers: shortcutModifiers(from: flags))
+        case .flagsChanged:
+            handleCapture(flags: flags)
+        default:
+            break
+        }
+    }
+
+    private func handleCapture(flags: CGEventFlags) {
+        handleCapture(modifiers: shortcutModifiers(from: flags))
+    }
+
+    private func handleCapture(flags: NSEvent.ModifierFlags) {
+        handleCapture(modifiers: shortcutModifiers(from: flags))
+    }
+
+    private func handleCapture(modifiers: ShortcutModifiers) {
+        if modifiers.isBareFunction {
+            scheduleBareFnCapture()
+        } else {
+            cancelPendingBareFnCapture()
+        }
+    }
+
+    private func captureShortcut(keyCode: UInt16, modifiers: ShortcutModifiers) {
+        cancelPendingBareFnCapture()
+        guard let (code, label) = keyCodeMetadata[keyCode] else {
+            emit("shortcut_capture_error", [
+                "message": "That key is not supported for global shortcuts.",
+            ])
+            return
+        }
+        guard modifiers.hasAny else {
+            emit("shortcut_capture_error", [
+                "message": "Shortcut must include Cmd, Ctrl, Opt, Shift, or Fn.",
+            ])
+            return
+        }
+
+        finishCapture(
+            MonitoredShortcut(
+                keyCode: keyCode,
+                code: code,
+                label: (modifiers.labelParts + [label]).joined(separator: "+"),
+                modifiers: modifiers
+            )
+        )
+    }
+
+    private func scheduleBareFnCapture() {
+        guard pendingBareFnCapture == nil else {
+            return
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            self?.finishCapture(.bareFn)
+        }
+        pendingBareFnCapture = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: work)
+    }
+
+    private func finishCapture(_ nextShortcut: MonitoredShortcut) {
+        guard isCapturingShortcut else {
+            return
+        }
+
+        isCapturingShortcut = false
+        cancelPendingBareFnCapture()
+        emitJSON("shortcut_captured", [
+            "shortcut": nextShortcut.payload,
+        ])
+    }
+
+    private func cancelPendingBareFnCapture() {
+        pendingBareFnCapture?.cancel()
+        pendingBareFnCapture = nil
+    }
+
+    private func observe(isDown nextIsDown: Bool) {
+        guard nextIsDown != shortcutIsDown else {
+            return
+        }
+
+        shortcutIsDown = nextIsDown
+        emit(nextIsDown ? "shortcut_key_down" : "shortcut_key_up", [
+            "shortcut": shortcut.label,
+        ])
+    }
+}
+
+private func keyCode(from event: CGEvent) -> UInt16 {
+    UInt16(event.getIntegerValueField(.keyboardEventKeycode))
+}
+
+private func modifiersMatch(_ flags: CGEventFlags, _ modifiers: ShortcutModifiers) -> Bool {
+    flags.contains(.maskCommand) == modifiers.command
+        && flags.contains(.maskControl) == modifiers.control
+        && flags.contains(.maskAlternate) == modifiers.option
+        && flags.contains(.maskShift) == modifiers.shift
+        && flags.contains(.maskSecondaryFn) == modifiers.function
+}
+
+private func modifiersMatch(_ flags: NSEvent.ModifierFlags, _ modifiers: ShortcutModifiers) -> Bool {
+    flags.contains(.command) == modifiers.command
+        && flags.contains(.control) == modifiers.control
+        && flags.contains(.option) == modifiers.option
+        && flags.contains(.shift) == modifiers.shift
+        && flags.contains(.function) == modifiers.function
+}
+
+private func shortcutModifiers(from flags: CGEventFlags) -> ShortcutModifiers {
+    ShortcutModifiers(
+        command: flags.contains(.maskCommand),
+        control: flags.contains(.maskControl),
+        option: flags.contains(.maskAlternate),
+        shift: flags.contains(.maskShift),
+        function: flags.contains(.maskSecondaryFn)
+    )
+}
+
+private func shortcutModifiers(from flags: NSEvent.ModifierFlags) -> ShortcutModifiers {
+    ShortcutModifiers(
+        command: flags.contains(.command),
+        control: flags.contains(.control),
+        option: flags.contains(.option),
+        shift: flags.contains(.shift),
+        function: flags.contains(.function)
+    )
+}
+
+private let keyCodeMetadata: [UInt16: (code: String, label: String)] = [
+    0x00: ("KeyA", "A"),
+    0x01: ("KeyS", "S"),
+    0x02: ("KeyD", "D"),
+    0x03: ("KeyF", "F"),
+    0x04: ("KeyH", "H"),
+    0x05: ("KeyG", "G"),
+    0x06: ("KeyZ", "Z"),
+    0x07: ("KeyX", "X"),
+    0x08: ("KeyC", "C"),
+    0x09: ("KeyV", "V"),
+    0x0b: ("KeyB", "B"),
+    0x0c: ("KeyQ", "Q"),
+    0x0d: ("KeyW", "W"),
+    0x0e: ("KeyE", "E"),
+    0x0f: ("KeyR", "R"),
+    0x10: ("KeyY", "Y"),
+    0x11: ("KeyT", "T"),
+    0x12: ("Digit1", "1"),
+    0x13: ("Digit2", "2"),
+    0x14: ("Digit3", "3"),
+    0x15: ("Digit4", "4"),
+    0x16: ("Digit6", "6"),
+    0x17: ("Digit5", "5"),
+    0x18: ("Equal", "="),
+    0x19: ("Digit9", "9"),
+    0x1a: ("Digit7", "7"),
+    0x1b: ("Minus", "-"),
+    0x1c: ("Digit8", "8"),
+    0x1d: ("Digit0", "0"),
+    0x1e: ("BracketRight", "]"),
+    0x1f: ("KeyO", "O"),
+    0x20: ("KeyU", "U"),
+    0x21: ("BracketLeft", "["),
+    0x22: ("KeyI", "I"),
+    0x23: ("KeyP", "P"),
+    0x24: ("Enter", "Return"),
+    0x25: ("KeyL", "L"),
+    0x26: ("KeyJ", "J"),
+    0x27: ("Quote", "'"),
+    0x28: ("KeyK", "K"),
+    0x29: ("Semicolon", ";"),
+    0x2a: ("Backslash", "\\"),
+    0x2b: ("Comma", ","),
+    0x2c: ("Slash", "/"),
+    0x2d: ("KeyN", "N"),
+    0x2e: ("KeyM", "M"),
+    0x2f: ("Period", "."),
+    0x30: ("Tab", "Tab"),
+    0x31: ("Space", "Space"),
+    0x32: ("Backquote", "`"),
+    0x33: ("Backspace", "Delete"),
+    0x35: ("Escape", "Esc"),
+    0x7a: ("F1", "F1"),
+    0x7b: ("ArrowLeft", "Left"),
+    0x7c: ("ArrowRight", "Right"),
+    0x7d: ("ArrowDown", "Down"),
+    0x7e: ("ArrowUp", "Up"),
+]
+
+private let shortcutEventTapCallback: CGEventTapCallBack = { _, type, event, userInfo in
+    guard let userInfo else {
+        return Unmanaged.passUnretained(event)
+    }
+
+    let monitor = Unmanaged<ShortcutKeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
+    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+        monitor.enableEventTap()
+        return Unmanaged.passUnretained(event)
+    }
+
+    monitor.handle(type: type, event: event)
+
+    return Unmanaged.passUnretained(event)
+}
+
 final class FocusTargetController {
     static let shared = FocusTargetController()
 
@@ -797,6 +1313,25 @@ func handleCommandLine(_ line: String) {
         runOnMain {
             dictation.setMicrophone(id: id, name: name)
         }
+    case "set_shortcut":
+        guard
+            let payload = command?["shortcut"] as? [String: Any],
+            let shortcut = MonitoredShortcut(payload: payload)
+        else {
+            emit("error", ["code": "invalid_shortcut", "message": "Shortcut configuration was invalid."])
+            return
+        }
+        runOnMain {
+            ShortcutKeyMonitor.shared.setShortcut(shortcut)
+        }
+    case "start_shortcut_capture":
+        runOnMain {
+            ShortcutKeyMonitor.shared.startShortcutCapture()
+        }
+    case "cancel_shortcut_capture":
+        runOnMain {
+            ShortcutKeyMonitor.shared.cancelShortcutCapture()
+        }
     case "toggle_listening":
         let shortcut = command?["shortcut"] as? String ?? "hotkey"
         runOnMain {
@@ -826,7 +1361,11 @@ func handleCommandLine(_ line: String) {
     }
 }
 
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+
 emit("ready")
+ShortcutKeyMonitor.shared.start()
 FocusTargetController.shared.start()
 dictation.emitDiagnostics()
 
@@ -836,4 +1375,4 @@ Thread.detachNewThread {
     }
 }
 
-RunLoop.main.run()
+app.run()

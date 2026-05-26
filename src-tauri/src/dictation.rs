@@ -6,12 +6,10 @@ use crate::providers::{
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
-    ffi::c_void,
     fs,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio},
-    ptr,
     sync::Mutex,
     thread,
     time::Duration,
@@ -40,24 +38,57 @@ pub struct HotkeyStatus {
     event: Mutex<serde_json::Value>,
 }
 
-#[cfg(target_os = "macos")]
-pub struct HotkeyManager {
-    hotkeys: Mutex<Option<carbon_hotkeys::CarbonHotkeys>>,
+pub struct ShortcutActivationState {
+    controller: Mutex<ShortcutActivationController>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DictationSettings {
     pub shortcut: DictationShortcutSetting,
+    pub activation_mode: DictationActivationMode,
     pub microphone: DictationMicrophoneSetting,
 }
 
 impl Default for DictationSettings {
     fn default() -> Self {
         Self {
-            shortcut: DictationShortcutSetting::fn_space(),
+            shortcut: DictationShortcutSetting::bare_fn(),
+            activation_mode: DictationActivationMode::default(),
             microphone: DictationMicrophoneSetting::default(),
         }
+    }
+}
+
+impl<'de> Deserialize<'de> for DictationSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct SettingsValue {
+            shortcut: Option<DictationShortcutSetting>,
+            activation_mode: Option<DictationActivationMode>,
+            microphone: Option<DictationMicrophoneSetting>,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let has_activation_mode = value.get("activationMode").is_some();
+        let settings: SettingsValue =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+
+        Ok(Self {
+            shortcut: if has_activation_mode {
+                settings
+                    .shortcut
+                    .unwrap_or_else(DictationShortcutSetting::bare_fn)
+            } else {
+                DictationShortcutSetting::bare_fn()
+            },
+            activation_mode: settings.activation_mode.unwrap_or_default(),
+            microphone: settings.microphone.unwrap_or_default(),
+        })
     }
 }
 
@@ -86,9 +117,8 @@ impl<'de> Deserialize<'de> for DictationShortcutSetting {
 
         let value = serde_json::Value::deserialize(deserializer)?;
         if let Some(shortcut) = value.as_str() {
-            return DictationShortcutPreset::from_id(shortcut)
-                .map(DictationShortcutSetting::from)
-                .ok_or_else(|| serde::de::Error::custom("unknown shortcut preset"));
+            return legacy_shortcut_setting(shortcut)
+                .ok_or_else(|| serde::de::Error::custom("unknown legacy shortcut"));
         }
 
         let shortcut: ShortcutSettingValue =
@@ -103,12 +133,16 @@ impl<'de> Deserialize<'de> for DictationShortcutSetting {
 }
 
 impl DictationShortcutSetting {
-    fn fn_space() -> Self {
-        DictationShortcutPreset::FnSpace.into()
-    }
-
-    fn control_option_space() -> Self {
-        DictationShortcutPreset::ControlOptionSpace.into()
+    fn bare_fn() -> Self {
+        Self {
+            key_code: 0,
+            code: "Fn".to_string(),
+            modifiers: DictationShortcutModifiers {
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Fn".to_string(),
+        }
     }
 }
 
@@ -130,54 +164,12 @@ pub struct DictationShortcutInput {
     pub label: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum DictationShortcutPreset {
-    FnSpace,
-    ControlOptionSpace,
-}
-
-impl DictationShortcutPreset {
-    fn from_id(id: &str) -> Option<Self> {
-        match id {
-            "fn_space" => Some(Self::FnSpace),
-            "control_option_space" => Some(Self::ControlOptionSpace),
-            _ => None,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::FnSpace => "Fn+Space",
-            Self::ControlOptionSpace => "Ctrl+Opt+Space",
-        }
-    }
-}
-
-impl From<DictationShortcutPreset> for DictationShortcutSetting {
-    fn from(shortcut: DictationShortcutPreset) -> Self {
-        match shortcut {
-            DictationShortcutPreset::FnSpace => Self {
-                key_code: 0x31,
-                code: "Space".to_string(),
-                modifiers: DictationShortcutModifiers {
-                    function: true,
-                    ..DictationShortcutModifiers::default()
-                },
-                label: shortcut.label().to_string(),
-            },
-            DictationShortcutPreset::ControlOptionSpace => Self {
-                key_code: 0x31,
-                code: "Space".to_string(),
-                modifiers: DictationShortcutModifiers {
-                    control: true,
-                    option: true,
-                    ..DictationShortcutModifiers::default()
-                },
-                label: shortcut.label().to_string(),
-            },
-        }
-    }
+pub enum DictationActivationMode {
+    #[default]
+    PushToTalk,
+    Toggle,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -193,6 +185,80 @@ pub struct DictationSettingsResponse {
     pub settings: DictationSettings,
 }
 
+#[derive(Debug, Default)]
+struct ShortcutActivationController {
+    is_down: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShortcutKeyEdge {
+    Down,
+    Up,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DictationCommand {
+    StartListening,
+    StopAndPaste,
+    ToggleListening,
+}
+
+impl ShortcutActivationController {
+    fn handle_edge(
+        &mut self,
+        edge: ShortcutKeyEdge,
+        mode: DictationActivationMode,
+    ) -> Option<DictationCommand> {
+        match (mode, edge) {
+            (DictationActivationMode::PushToTalk, ShortcutKeyEdge::Down) => {
+                if self.is_down {
+                    None
+                } else {
+                    self.is_down = true;
+                    Some(DictationCommand::StartListening)
+                }
+            }
+            (DictationActivationMode::PushToTalk, ShortcutKeyEdge::Up) => {
+                if self.is_down {
+                    self.is_down = false;
+                    Some(DictationCommand::StopAndPaste)
+                } else {
+                    None
+                }
+            }
+            (DictationActivationMode::Toggle, ShortcutKeyEdge::Down) => {
+                if self.is_down {
+                    None
+                } else {
+                    self.is_down = true;
+                    Some(DictationCommand::ToggleListening)
+                }
+            }
+            (DictationActivationMode::Toggle, ShortcutKeyEdge::Up) => {
+                self.is_down = false;
+                None
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.is_down = false;
+    }
+}
+
+impl DictationCommand {
+    fn helper_command(self, shortcut_label: &str) -> serde_json::Value {
+        match self {
+            Self::StartListening => serde_json::json!({ "type": "start_listening" }),
+            Self::StopAndPaste => serde_json::json!({ "type": "stop_and_paste" }),
+            Self::ToggleListening => serde_json::json!({
+                "type": "toggle_listening",
+                "shortcut": shortcut_label,
+            }),
+        }
+    }
+}
+
 impl DictationShortcutInput {
     fn into_setting(self) -> Result<DictationShortcutSetting, AppError> {
         if self.code.trim().is_empty() || self.label.trim().is_empty() {
@@ -200,6 +266,10 @@ impl DictationShortcutInput {
                 "dictation_shortcut_incomplete",
                 "Shortcut is incomplete.",
             ));
+        }
+
+        if is_bare_fn_input(&self.code, &self.modifiers) {
+            return Ok(DictationShortcutSetting::bare_fn());
         }
 
         let key_code = key_code_for_code(&self.code).ok_or_else(|| {
@@ -230,6 +300,46 @@ impl DictationShortcutInput {
     }
 }
 
+fn is_bare_fn_input(code: &str, modifiers: &DictationShortcutModifiers) -> bool {
+    code.eq_ignore_ascii_case("Fn") && modifiers.function && no_standard_modifiers(modifiers)
+}
+
+fn legacy_shortcut_setting(id: &str) -> Option<DictationShortcutSetting> {
+    match id {
+        "bare_fn" | "fn" => Some(DictationShortcutSetting::bare_fn()),
+        "fn_space" => Some(DictationShortcutSetting {
+            key_code: 0x31,
+            code: "Space".to_string(),
+            modifiers: DictationShortcutModifiers {
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Fn+Space".to_string(),
+        }),
+        "control_option_space" => Some(DictationShortcutSetting {
+            key_code: 0x31,
+            code: "Space".to_string(),
+            modifiers: DictationShortcutModifiers {
+                control: true,
+                option: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Ctrl+Opt+Space".to_string(),
+        }),
+        _ => None,
+    }
+}
+
+fn is_bare_fn_shortcut(shortcut: &DictationShortcutSetting) -> bool {
+    shortcut.code.eq_ignore_ascii_case("Fn")
+        && shortcut.modifiers.function
+        && no_standard_modifiers(&shortcut.modifiers)
+}
+
+fn no_standard_modifiers(modifiers: &DictationShortcutModifiers) -> bool {
+    !modifiers.command && !modifiers.control && !modifiers.option && !modifiers.shift
+}
+
 pub fn setup(app: &mut tauri::App) {
     if let Err(error) = configure_hud_window(app.handle()) {
         eprintln!("failed to configure dictation HUD: {error}");
@@ -237,6 +347,9 @@ pub fn setup(app: &mut tauri::App) {
     manage_settings(app.handle());
     app.manage(LastDictationEvent {
         event: Mutex::new(None),
+    });
+    app.manage(ShortcutActivationState {
+        controller: Mutex::new(ShortcutActivationController::default()),
     });
 
     let helper = spawn_helper(app.handle()).ok();
@@ -247,65 +360,26 @@ pub fn setup(app: &mut tauri::App) {
     {
         let settings = app.state::<DictationSettingsState>();
         let helper_state = app.state::<HelperState>();
-        let microphone = settings
+        let settings = settings
             .settings
             .lock()
             .ok()
-            .map(|settings| settings.microphone.clone());
-        if let Some(microphone) = microphone {
-            let _ = apply_microphone_setting(&helper_state, &microphone);
+            .map(|settings| settings.clone());
+        if let Some(settings) = settings {
+            let _ = apply_microphone_setting(&helper_state, &settings.microphone);
+            let _ = apply_shortcut_setting(&helper_state, &settings.shortcut);
         }
     }
 
     #[cfg(target_os = "macos")]
     {
-        app.manage(HotkeyManager {
-            hotkeys: Mutex::new(None),
-        });
-
-        let settings = app.state::<DictationSettingsState>();
-        let shortcut = settings
+        let shortcut = app
+            .state::<DictationSettingsState>()
             .settings
             .lock()
             .map(|settings| settings.shortcut.clone())
-            .unwrap_or_else(|_| DictationShortcutSetting::fn_space());
-        let hotkeys = carbon_hotkeys::register(app.handle(), shortcut.clone()).or_else(|error| {
-            if shortcut != DictationShortcutSetting::fn_space() {
-                return Err(error);
-            }
-
-            carbon_hotkeys::register(
-                app.handle(),
-                DictationShortcutSetting::control_option_space(),
-            )
-            .map(|hotkeys| {
-                if let Err(settings_error) = update_settings(&settings, |settings| {
-                    settings.shortcut = DictationShortcutSetting::control_option_space();
-                }) {
-                    let message = format!(
-                        "Could not save fallback shortcut: {}",
-                        settings_error.message
-                    );
-                    eprintln!("{message}");
-                    let _ = app.emit("dictation-event", hotkey_error_event(message).to_string());
-                }
-                hotkeys
-            })
-            .map_err(|fallback_error| format!("{error} {fallback_error}"))
-        });
-
-        let event = match hotkeys {
-            Ok(hotkeys) => {
-                let shortcut = hotkeys.shortcut().clone();
-                if let Some(manager) = app.try_state::<HotkeyManager>() {
-                    if let Ok(mut active_hotkeys) = manager.hotkeys.lock() {
-                        *active_hotkeys = Some(hotkeys);
-                    }
-                }
-                hotkey_ready_event(&shortcut)
-            }
-            Err(error) => hotkey_error_event(error),
-        };
+            .unwrap_or_else(|_| DictationShortcutSetting::bare_fn());
+        let event = hotkey_ready_event(&shortcut);
 
         app.manage(HotkeyStatus {
             event: Mutex::new(event.clone()),
@@ -331,7 +405,7 @@ pub fn dictation_settings(
 pub fn set_dictation_shortcut(
     app: AppHandle,
     state: State<'_, DictationSettingsState>,
-    hotkey_manager: State<'_, HotkeyManager>,
+    helper_state: State<'_, HelperState>,
     hotkey_status: State<'_, HotkeyStatus>,
     shortcut: DictationShortcutInput,
 ) -> Result<DictationSettings, AppError> {
@@ -344,23 +418,15 @@ pub fn set_dictation_shortcut(
 
     if current_settings.shortcut == shortcut {
         set_hotkey_status(&hotkey_status, hotkey_ready_event(&shortcut));
+        apply_shortcut_setting(&helper_state, &shortcut)?;
         return Ok(current_settings);
     }
 
-    let next_hotkeys = carbon_hotkeys::register(&app, shortcut.clone()).map_err(|error| {
-        AppError::new("dictation_hotkey_registration_failed", error.to_string())
-    })?;
     let settings = update_settings(&state, |settings| {
         settings.shortcut = shortcut;
     })?;
-
-    {
-        let mut active_hotkeys = hotkey_manager
-            .hotkeys
-            .lock()
-            .map_err(|_| AppError::new("dictation_hotkey_unavailable", "Hotkey lock failed."))?;
-        *active_hotkeys = Some(next_hotkeys);
-    }
+    reset_shortcut_activation(&app);
+    apply_shortcut_setting(&helper_state, &settings.shortcut)?;
 
     set_hotkey_status(&hotkey_status, hotkey_ready_event(&settings.shortcut));
     Ok(settings)
@@ -377,6 +443,19 @@ pub fn set_dictation_microphone(
         settings.microphone = DictationMicrophoneSetting { id, name };
     })?;
     apply_microphone_setting(&helper_state, &settings.microphone)?;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub fn set_dictation_activation_mode(
+    app: AppHandle,
+    state: State<'_, DictationSettingsState>,
+    activation_mode: DictationActivationMode,
+) -> Result<DictationSettings, AppError> {
+    let settings = update_settings(&state, |settings| {
+        settings.activation_mode = activation_mode;
+    })?;
+    reset_shortcut_activation(&app);
     Ok(settings)
 }
 
@@ -453,6 +532,91 @@ fn apply_microphone_setting(
             "name": microphone.name,
         }),
     )
+}
+
+fn apply_shortcut_setting(
+    helper_state: &HelperState,
+    shortcut: &DictationShortcutSetting,
+) -> Result<(), AppError> {
+    send_helper_command(
+        helper_state,
+        serde_json::json!({
+            "type": "set_shortcut",
+            "shortcut": {
+                "keyCode": shortcut.key_code,
+                "code": shortcut.code,
+                "label": shortcut.label,
+                "modifiers": shortcut.modifiers,
+            },
+        }),
+    )
+}
+
+fn handle_shortcut_key_event(app: &AppHandle, event_type: Option<&str>) {
+    let Some(event_type) = event_type else {
+        return;
+    };
+
+    let edge = match event_type {
+        "fn_key_down" | "shortcut_key_down" => ShortcutKeyEdge::Down,
+        "fn_key_up" | "shortcut_key_up" => ShortcutKeyEdge::Up,
+        _ => return,
+    };
+
+    let Some(settings) = current_dictation_settings(app) else {
+        reset_shortcut_activation(app);
+        return;
+    };
+
+    if matches!(event_type, "fn_key_down" | "fn_key_up") && !is_bare_fn_shortcut(&settings.shortcut)
+    {
+        reset_shortcut_activation(app);
+        return;
+    }
+
+    let command = app
+        .try_state::<ShortcutActivationState>()
+        .and_then(|state| {
+            state
+                .controller
+                .lock()
+                .ok()
+                .and_then(|mut state| state.handle_edge(edge, settings.activation_mode))
+        });
+
+    if let Some(command) = command {
+        send_dictation_command(app, command, &settings.shortcut.label);
+    }
+}
+
+fn current_dictation_settings(app: &AppHandle) -> Option<DictationSettings> {
+    app.try_state::<DictationSettingsState>()
+        .and_then(|state| state.settings.lock().ok().map(|settings| settings.clone()))
+}
+
+fn reset_shortcut_activation(app: &AppHandle) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
+        if let Ok(mut controller) = state.controller.lock() {
+            controller.reset();
+        }
+    }
+}
+
+fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_label: &str) {
+    let Some(state) = app.try_state::<HelperState>() else {
+        emit_dictation_event_value(
+            app,
+            app_error_event(AppError::new(
+                "dictation_helper_unavailable",
+                "Dictation helper process is not running.",
+            )),
+        );
+        return;
+    };
+
+    if let Err(error) = send_helper_command(&state, command.helper_command(shortcut_label)) {
+        emit_dictation_event_value(app, app_error_event(error));
+    }
 }
 
 fn settings_path(app: &AppHandle) -> Option<PathBuf> {
@@ -627,6 +791,8 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         .as_ref()
         .and_then(|event| event.get("type"))
         .and_then(serde_json::Value::as_str);
+
+    handle_shortcut_key_event(app, event_type);
 
     if matches!(event_type, Some("recording_ready")) {
         if let Some(event) = event.as_ref() {
@@ -991,311 +1157,78 @@ pub fn key_code_for_code(code: &str) -> Option<u32> {
     })
 }
 
-#[cfg(target_os = "macos")]
-mod carbon_hotkeys {
-    use super::*;
-
-    type OSStatus = i32;
-    type OSType = u32;
-    type EventHandlerCallRef = *mut c_void;
-    type EventRef = *mut c_void;
-    type EventHandlerRef = *mut c_void;
-    type EventHotKeyRef = *mut c_void;
-    type EventTargetRef = *mut c_void;
-    type EventHandlerUPP = extern "C" fn(EventHandlerCallRef, EventRef, *mut c_void) -> OSStatus;
-
-    const NO_ERR: OSStatus = 0;
-    const K_EVENT_CLASS_KEYBOARD: OSType = four_char_code(*b"keyb");
-    const K_EVENT_HOT_KEY_PRESSED: u32 = 5;
-    const K_EVENT_PARAM_DIRECT_OBJECT: OSType = four_char_code(*b"----");
-    const TYPE_EVENT_HOT_KEY_ID: OSType = four_char_code(*b"hkid");
-    const COMMAND_KEY: u32 = 1 << 8;
-    const SHIFT_KEY: u32 = 1 << 9;
-    const OPTION_KEY: u32 = 1 << 11;
-    const CONTROL_KEY: u32 = 1 << 12;
-    const FN_KEY: u32 = 1 << 17;
-
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct EventTypeSpec {
-        event_class: OSType,
-        event_kind: u32,
-    }
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Default)]
-    struct EventHotKeyID {
-        signature: OSType,
-        id: u32,
-    }
-
-    #[link(name = "Carbon", kind = "framework")]
-    extern "C" {
-        fn GetApplicationEventTarget() -> EventTargetRef;
-        fn InstallEventHandler(
-            target: EventTargetRef,
-            handler: EventHandlerUPP,
-            num_types: u32,
-            list: *const EventTypeSpec,
-            user_data: *mut c_void,
-            out_ref: *mut EventHandlerRef,
-        ) -> OSStatus;
-        fn RemoveEventHandler(handler_ref: EventHandlerRef) -> OSStatus;
-        fn RegisterEventHotKey(
-            key_code: u32,
-            modifiers: u32,
-            hot_key_id: EventHotKeyID,
-            target: EventTargetRef,
-            options: u32,
-            out_ref: *mut EventHotKeyRef,
-        ) -> OSStatus;
-        fn UnregisterEventHotKey(hot_key_ref: EventHotKeyRef) -> OSStatus;
-        fn GetEventParameter(
-            event: EventRef,
-            name: OSType,
-            desired_type: OSType,
-            actual_type: *mut OSType,
-            buffer_size: usize,
-            actual_size: *mut usize,
-            out_data: *mut c_void,
-        ) -> OSStatus;
-    }
-
-    pub struct CarbonHotkeys {
-        handler_ref: EventHandlerRef,
-        hotkey_refs: Vec<EventHotKeyRef>,
-        shortcut: DictationShortcutSetting,
-        controller: *mut HotkeyController,
-    }
-
-    unsafe impl Send for CarbonHotkeys {}
-    unsafe impl Sync for CarbonHotkeys {}
-
-    struct HotkeyController {
-        app: AppHandle,
-        shortcut_label: String,
-    }
-
-    pub fn register(
-        app: &AppHandle,
-        shortcut: DictationShortcutSetting,
-    ) -> Result<CarbonHotkeys, String> {
-        let controller = Box::into_raw(Box::new(HotkeyController {
-            app: app.clone(),
-            shortcut_label: shortcut.label.clone(),
-        }));
-        let mut handler_ref = ptr::null_mut();
-        let event_type = EventTypeSpec {
-            event_class: K_EVENT_CLASS_KEYBOARD,
-            event_kind: K_EVENT_HOT_KEY_PRESSED,
-        };
-
-        let handler_status = unsafe {
-            InstallEventHandler(
-                GetApplicationEventTarget(),
-                hotkey_handler,
-                1,
-                &event_type,
-                controller.cast(),
-                &mut handler_ref,
-            )
-        };
-
-        if handler_status != NO_ERR {
-            unsafe {
-                drop(Box::from_raw(controller));
-            }
-            return Err(format!(
-                "Could not install Carbon hotkey handler (OSStatus {handler_status})."
-            ));
-        }
-
-        let mut hotkey_refs = Vec::new();
-        if let Err(error) = register_hotkey(&shortcut, &mut hotkey_refs) {
-            unsafe {
-                RemoveEventHandler(handler_ref);
-                drop(Box::from_raw(controller));
-            }
-            return Err(error);
-        }
-
-        Ok(CarbonHotkeys {
-            handler_ref,
-            hotkey_refs,
-            shortcut,
-            controller,
-        })
-    }
-
-    impl CarbonHotkeys {
-        pub fn shortcut(&self) -> &DictationShortcutSetting {
-            &self.shortcut
-        }
-    }
-
-    fn register_hotkey(
-        shortcut: &DictationShortcutSetting,
-        hotkey_refs: &mut Vec<EventHotKeyRef>,
-    ) -> Result<(), String> {
-        let mut hotkey_ref = ptr::null_mut();
-        let status = unsafe {
-            RegisterEventHotKey(
-                shortcut.key_code,
-                modifier_mask(&shortcut.modifiers),
-                EventHotKeyID {
-                    signature: four_char_code(*b"OSSD"),
-                    id: 1,
-                },
-                GetApplicationEventTarget(),
-                0,
-                &mut hotkey_ref,
-            )
-        };
-
-        if status != NO_ERR {
-            return Err(format!(
-                "Could not register {} (OSStatus {status}).",
-                shortcut.label
-            ));
-        }
-
-        hotkey_refs.push(hotkey_ref);
-        Ok(())
-    }
-
-    fn modifier_mask(modifiers: &DictationShortcutModifiers) -> u32 {
-        let mut mask = 0;
-        if modifiers.command {
-            mask |= COMMAND_KEY;
-        }
-        if modifiers.shift {
-            mask |= SHIFT_KEY;
-        }
-        if modifiers.option {
-            mask |= OPTION_KEY;
-        }
-        if modifiers.control {
-            mask |= CONTROL_KEY;
-        }
-        if modifiers.function {
-            mask |= FN_KEY;
-        }
-        mask
-    }
-
-    extern "C" fn hotkey_handler(
-        _next_handler: EventHandlerCallRef,
-        event: EventRef,
-        user_data: *mut c_void,
-    ) -> OSStatus {
-        if event.is_null() || user_data.is_null() {
-            return NO_ERR;
-        }
-
-        let controller = unsafe { &*(user_data.cast::<HotkeyController>()) };
-        if is_registered_hotkey_event(event) {
-            let state = controller.app.state::<HelperState>();
-            if let Err(error) = send_helper_command(
-                &state,
-                serde_json::json!({
-                    "type": "toggle_listening",
-                    "shortcut": controller.shortcut_label,
-                }),
-            ) {
-                let _ = controller.app.emit(
-                    "dictation-event",
-                    serde_json::json!({
-                        "type": "error",
-                        "payload": {
-                            "code": error.code,
-                            "message": error.message,
-                        },
-                    })
-                    .to_string(),
-                );
-            }
-        }
-
-        NO_ERR
-    }
-
-    fn is_registered_hotkey_event(event: EventRef) -> bool {
-        let mut hotkey_id = EventHotKeyID::default();
-        let status = unsafe {
-            GetEventParameter(
-                event,
-                K_EVENT_PARAM_DIRECT_OBJECT,
-                TYPE_EVENT_HOT_KEY_ID,
-                ptr::null_mut(),
-                std::mem::size_of::<EventHotKeyID>(),
-                ptr::null_mut(),
-                (&mut hotkey_id as *mut EventHotKeyID).cast(),
-            )
-        };
-
-        if status != NO_ERR {
-            return false;
-        }
-
-        hotkey_id.id == 1
-    }
-
-    impl Drop for CarbonHotkeys {
-        fn drop(&mut self) {
-            for hotkey_ref in self.hotkey_refs.drain(..) {
-                if !hotkey_ref.is_null() {
-                    unsafe {
-                        UnregisterEventHotKey(hotkey_ref);
-                    }
-                }
-            }
-
-            if !self.handler_ref.is_null() {
-                unsafe {
-                    RemoveEventHandler(self.handler_ref);
-                }
-            }
-
-            if !self.controller.is_null() {
-                unsafe {
-                    drop(Box::from_raw(self.controller));
-                }
-                self.controller = ptr::null_mut();
-            }
-        }
-    }
-
-    const fn four_char_code(value: [u8; 4]) -> OSType {
-        ((value[0] as OSType) << 24)
-            | ((value[1] as OSType) << 16)
-            | ((value[2] as OSType) << 8)
-            | (value[3] as OSType)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn default_settings_use_fn_space() {
+    fn default_settings_use_bare_fn() {
         let settings = DictationSettings::default();
 
-        assert_eq!(settings.shortcut.label, "Fn+Space");
-        assert_eq!(settings.shortcut.code, "Space");
+        assert_eq!(settings.shortcut.label, "Fn");
+        assert_eq!(settings.shortcut.code, "Fn");
+        assert_eq!(settings.shortcut.key_code, 0);
         assert!(settings.shortcut.modifiers.function);
+        assert_eq!(
+            settings.activation_mode,
+            DictationActivationMode::PushToTalk
+        );
     }
 
     #[test]
-    fn deserializes_shortcut_preset() {
+    fn deserializes_legacy_shortcut_string() {
         let settings: DictationSettings = serde_json::from_str(
-            r#"{"shortcut":"control_option_space","microphone":{"id":null,"name":null}}"#,
+            r#"{"shortcut":"control_option_space","activationMode":"toggle","microphone":{"id":null,"name":null}}"#,
         )
-        .expect("preset should deserialize");
+        .expect("legacy shortcut should deserialize");
 
         assert_eq!(settings.shortcut.label, "Ctrl+Opt+Space");
         assert!(settings.shortcut.modifiers.control);
         assert!(settings.shortcut.modifiers.option);
+        assert_eq!(settings.activation_mode, DictationActivationMode::Toggle);
+    }
+
+    #[test]
+    fn old_settings_without_activation_mode_migrate_to_fn_push_to_talk() {
+        let settings: DictationSettings = serde_json::from_str(
+            r#"{"shortcut":"control_option_space","microphone":{"id":"usb","name":"USB Mic"}}"#,
+        )
+        .expect("legacy settings should deserialize");
+
+        assert_eq!(settings.shortcut, DictationShortcutSetting::bare_fn());
+        assert_eq!(
+            settings.activation_mode,
+            DictationActivationMode::PushToTalk
+        );
+        assert_eq!(settings.microphone.id.as_deref(), Some("usb"));
+        assert_eq!(settings.microphone.name.as_deref(), Some("USB Mic"));
+    }
+
+    #[test]
+    fn deserializes_legacy_bare_fn_shortcut_string() {
+        let settings: DictationSettings = serde_json::from_str(
+            r#"{"shortcut":"bare_fn","activationMode":"push_to_talk","microphone":{"id":null,"name":null}}"#,
+        )
+        .expect("legacy shortcut should deserialize");
+
+        assert_eq!(settings.shortcut, DictationShortcutSetting::bare_fn());
+        assert!(is_bare_fn_shortcut(&settings.shortcut));
+    }
+
+    #[test]
+    fn shortcut_input_accepts_bare_fn() {
+        let shortcut = DictationShortcutInput {
+            code: "Fn".to_string(),
+            modifiers: DictationShortcutModifiers {
+                function: true,
+                ..DictationShortcutModifiers::default()
+            },
+            label: "Fn".to_string(),
+        }
+        .into_setting()
+        .expect("bare Fn should be accepted");
+
+        assert_eq!(shortcut, DictationShortcutSetting::bare_fn());
     }
 
     #[test]
@@ -1325,6 +1258,56 @@ mod tests {
         .expect_err("unsupported key should fail");
 
         assert_eq!(err.code, "dictation_shortcut_unsupported");
+    }
+
+    #[test]
+    fn push_to_talk_starts_on_down_and_stops_on_up() {
+        let mut controller = ShortcutActivationController::default();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationActivationMode::PushToTalk),
+            Some(DictationCommand::StartListening)
+        );
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationActivationMode::PushToTalk),
+            Some(DictationCommand::StopAndPaste)
+        );
+    }
+
+    #[test]
+    fn toggle_mode_toggles_on_down_and_ignores_up() {
+        let mut controller = ShortcutActivationController::default();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationActivationMode::Toggle),
+            Some(DictationCommand::ToggleListening)
+        );
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationActivationMode::Toggle),
+            None
+        );
+    }
+
+    #[test]
+    fn shortcut_activation_ignores_duplicate_edges() {
+        let mut controller = ShortcutActivationController::default();
+
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationActivationMode::PushToTalk),
+            Some(DictationCommand::StartListening)
+        );
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationActivationMode::PushToTalk),
+            None
+        );
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationActivationMode::PushToTalk),
+            Some(DictationCommand::StopAndPaste)
+        );
+        assert_eq!(
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationActivationMode::PushToTalk),
+            None
+        );
     }
 
     #[test]

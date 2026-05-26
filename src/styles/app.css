@@ -1923,7 +1923,7 @@ input:focus-visible,
   background: var(--muted);
 }
 
-/* Dictation settings page ------------------------------------------- */
+/* Settings page ------------------------------------------------------ */
 
 .settings-page {
   width: 100%;

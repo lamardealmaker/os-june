@@ -1,7 +1,6 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { DictationSettings } from "../components/dictation/DictationSettings";
 import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
@@ -71,7 +70,7 @@ export function App() {
           const note = await getNote(firstNoteId);
           dispatch({ type: "noteLoaded", note });
         } else {
-          setActiveView("dictation");
+          setActiveView("settings");
         }
       })
       .catch((err: unknown) => setError(messageFromError(err)));
@@ -231,7 +230,7 @@ export function App() {
         const note = await getNote(nextNoteId);
         dispatch({ type: "noteLoaded", note });
       } else {
-        setActiveView("dictation");
+        setActiveView("settings");
         setOriginFolderId(undefined);
       }
     } catch (err) {
@@ -404,8 +403,6 @@ export function App() {
                 checkingSourceReadiness={checkingSourceReadiness}
                 onSourceModeChange={setSourceMode}
               />
-            ) : activeView === "dictation" ? (
-              <DictationSettings />
             ) : activeView === "folders" ? (
               <FoldersWorkspace
                 folders={state.folders}

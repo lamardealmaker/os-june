@@ -2,7 +2,6 @@ import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconFolders } from "central-icons/IconFolders";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
-import { IconMicrophoneSparkle } from "central-icons/IconMicrophoneSparkle";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSettingsGear1 } from "central-icons/IconSettingsGear1";
 import { IconSidebarHiddenLeftWide } from "central-icons/IconSidebarHiddenLeftWide";
@@ -11,7 +10,7 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
-export type SidebarView = "notes" | "dictation" | "settings" | "folders";
+export type SidebarView = "notes" | "settings" | "folders";
 
 type SidebarProps = {
   folders: FolderDto[];
@@ -166,18 +165,6 @@ export function Sidebar({
             <IconSettingsGear1 size={16} />
           </span>
           <span className="sidebar-nav-label">Settings</span>
-        </button>
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          data-active={activeView === "dictation"}
-          aria-current={activeView === "dictation" ? "page" : undefined}
-          onClick={() => onChangeView("dictation")}
-        >
-          <span className="sidebar-nav-icon">
-            <IconMicrophoneSparkle size={16} />
-          </span>
-          <span className="sidebar-nav-label">Dictation</span>
         </button>
         <button
           type="button"
