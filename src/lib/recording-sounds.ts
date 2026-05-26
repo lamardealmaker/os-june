@@ -8,12 +8,14 @@ export type RecordingSound = keyof typeof RECORDING_SOUND_PATHS;
 
 let audioConstructor: typeof Audio | undefined;
 const audioElements = new Map<RecordingSound, HTMLAudioElement>();
+const activeAudioElements = new Set<HTMLAudioElement>();
 
 function getRecordingAudio(sound: RecordingSound) {
   if (typeof Audio === "undefined") return;
 
   if (audioConstructor !== Audio) {
     audioElements.clear();
+    activeAudioElements.clear();
     audioConstructor = Audio;
   }
 
@@ -38,11 +40,28 @@ export function playRecordingSound(sound: RecordingSound) {
   const audio = getRecordingAudio(sound);
   if (!audio) return;
 
-  audio.pause();
-  audio.currentTime = 0;
-  audio.volume = 0.7;
-
-  void audio.play().catch(() => {
-    // Browsers and webviews may reject autoplay. Recording should continue.
+  activeAudioElements.forEach((activeAudio) => {
+    activeAudio.pause();
+    activeAudio.currentTime = 0;
   });
+  activeAudioElements.clear();
+
+  const playbackAudio = audio.cloneNode(true) as HTMLAudioElement;
+  playbackAudio.volume = 0.7;
+  playbackAudio.currentTime = 0;
+  activeAudioElements.add(playbackAudio);
+  playbackAudio.addEventListener(
+    "ended",
+    () => activeAudioElements.delete(playbackAudio),
+    { once: true },
+  );
+
+  void playbackAudio
+    .play()
+    .catch(() => {
+      // Browsers and webviews may reject autoplay. Recording should continue.
+    })
+    .finally(() => {
+      if (playbackAudio.paused) activeAudioElements.delete(playbackAudio);
+    });
 }

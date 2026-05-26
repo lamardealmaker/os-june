@@ -360,10 +360,10 @@ export function App() {
   }
 
   async function handleResumeRecording(sessionId: string) {
+    playRecordingSound("start");
     try {
       const status = await resumeRecording(sessionId);
       dispatch({ type: "recordingStatusChanged", status });
-      playRecordingSound("start");
     } catch (err) {
       setError(messageFromError(err));
     }
