@@ -7,6 +7,9 @@ import type { DictationSettingsDto } from "../lib/tauri";
 const mocks = vi.hoisted(() => ({
   dictationSettings: vi.fn(),
   dictationHelperCommand: vi.fn(),
+  providerModelSettings: vi.fn(),
+  listVeniceModels: vi.fn(),
+  setVeniceModel: vi.fn(),
   openPrivacySettings: vi.fn(),
   setDictationMicrophone: vi.fn(),
   listen: vi.fn(),
@@ -16,6 +19,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../lib/tauri", () => ({
   dictationSettings: mocks.dictationSettings,
   dictationHelperCommand: mocks.dictationHelperCommand,
+  providerModelSettings: mocks.providerModelSettings,
+  listVeniceModels: mocks.listVeniceModels,
+  setVeniceModel: mocks.setVeniceModel,
   openPrivacySettings: mocks.openPrivacySettings,
   setDictationMicrophone: mocks.setDictationMicrophone,
 }));
@@ -44,6 +50,55 @@ describe("AppSettings", () => {
     vi.clearAllMocks();
     mocks.eventHandler = undefined;
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5",
+      },
+    });
+    mocks.listVeniceModels.mockImplementation(async (mode) => ({
+      mode,
+      modelType: mode === "transcription" ? "asr" : "text",
+      selectedModel:
+        mode === "transcription"
+          ? "nvidia/parakeet-tdt-0.6b-v3"
+          : "zai-org-glm-5",
+      models:
+        mode === "transcription"
+          ? [
+              {
+                id: "nvidia/parakeet-tdt-0.6b-v3",
+                name: "Parakeet",
+                modelType: "asr",
+                traits: [],
+              },
+              {
+                id: "transcribe-large",
+                name: "Transcribe Large",
+                modelType: "asr",
+                traits: [],
+              },
+            ]
+          : [
+              {
+                id: "zai-org-glm-5",
+                name: "GLM 5",
+                modelType: "text",
+                traits: [],
+              },
+              {
+                id: "venice-uncensored",
+                name: "Venice Uncensored",
+                modelType: "text",
+                traits: [],
+              },
+            ],
+    }));
+    mocks.setVeniceModel.mockImplementation(async (mode, modelId) => ({
+      transcriptionModel:
+        mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
+      generationModel: mode === "generation" ? modelId : "zai-org-glm-5",
+    }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
     mocks.openPrivacySettings.mockResolvedValue(undefined);
     mocks.setDictationMicrophone.mockImplementation(async (id, name) => ({
@@ -125,6 +180,38 @@ describe("AppSettings", () => {
     expect(mocks.openPrivacySettings).toHaveBeenNthCalledWith(
       2,
       "accessibility",
+    );
+  });
+
+  it("loads Venice model options and saves selected models", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onSourceModeChange={vi.fn()}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"),
+    );
+    await user.selectOptions(
+      screen.getByLabelText("Transcription model"),
+      "transcribe-large",
+    );
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "transcription",
+      "transcribe-large",
+    );
+
+    await user.selectOptions(
+      screen.getByLabelText("Note generation model"),
+      "venice-uncensored",
+    );
+    expect(mocks.setVeniceModel).toHaveBeenCalledWith(
+      "generation",
+      "venice-uncensored",
     );
   });
 });

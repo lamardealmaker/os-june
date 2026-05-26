@@ -1,7 +1,8 @@
 use crate::domain::types::AppError;
 use crate::providers::{
-    configured_provider, MOCK_PROVIDER,
+    configured_provider,
     transcription::{transcribe_saved_audio, TranscriptionProviderResult, TranscriptionRequest},
+    VENICE_PROVIDER,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
@@ -273,24 +274,24 @@ pub fn setup(app: &mut tauri::App) {
                 return Err(error);
             }
 
-            carbon_hotkeys::register(app.handle(), DictationShortcutSetting::control_option_space())
-                .map(|hotkeys| {
-                    if let Err(settings_error) = update_settings(&settings, |settings| {
-                        settings.shortcut = DictationShortcutSetting::control_option_space();
-                    }) {
-                        let message = format!(
-                            "Could not save fallback shortcut: {}",
-                            settings_error.message
-                        );
-                        eprintln!("{message}");
-                        let _ = app.emit(
-                            "dictation-event",
-                            hotkey_error_event(message).to_string(),
-                        );
-                    }
-                    hotkeys
-                })
-                .map_err(|fallback_error| format!("{error} {fallback_error}"))
+            carbon_hotkeys::register(
+                app.handle(),
+                DictationShortcutSetting::control_option_space(),
+            )
+            .map(|hotkeys| {
+                if let Err(settings_error) = update_settings(&settings, |settings| {
+                    settings.shortcut = DictationShortcutSetting::control_option_space();
+                }) {
+                    let message = format!(
+                        "Could not save fallback shortcut: {}",
+                        settings_error.message
+                    );
+                    eprintln!("{message}");
+                    let _ = app.emit("dictation-event", hotkey_error_event(message).to_string());
+                }
+                hotkeys
+            })
+            .map_err(|fallback_error| format!("{error} {fallback_error}"))
         });
 
         let event = match hotkeys {
@@ -575,12 +576,18 @@ fn spawn_helper(app: &AppHandle) -> Result<HelperProcess, AppError> {
         .map_err(|error| {
             AppError::new(
                 "dictation_helper_start_failed",
-                format!("Failed to start helper at {}: {error}", helper_path.display()),
+                format!(
+                    "Failed to start helper at {}: {error}",
+                    helper_path.display()
+                ),
             )
         })?;
 
     let stdin = child.stdin.take().ok_or_else(|| {
-        AppError::new("dictation_helper_start_failed", "Helper stdin was unavailable.")
+        AppError::new(
+            "dictation_helper_start_failed",
+            "Helper stdin was unavailable.",
+        )
     })?;
     let stdout = child.stdout.take().ok_or_else(|| {
         AppError::new(
@@ -652,10 +659,7 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
         Ok(provider) => provider,
         Err(error) => {
             let state = app.state::<HelperState>();
-            let _ = send_helper_command(
-                &state,
-                serde_json::json!({ "type": "discard_recording" }),
-            );
+            let _ = send_helper_command(&state, serde_json::json!({ "type": "discard_recording" }));
             emit_dictation_event_value(&app, app_error_event(error));
             return;
         }
@@ -679,10 +683,10 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
 }
 
 fn dictation_transcription_provider(provider: String) -> Result<String, AppError> {
-    if provider == MOCK_PROVIDER {
+    if provider != VENICE_PROVIDER {
         return Err(AppError::new(
             "dictation_provider_not_configured",
-            "Dictation requires real transcription. Set OPENAI_API_KEY in .env or in the shell that launches Tauri.",
+            "Dictation requires Venice transcription. Set VENICE_API_KEY in .env or in the shell that launches Tauri.",
         ));
     }
     Ok(provider)
@@ -746,11 +750,7 @@ fn emit_dictation_event_value(app: &AppHandle, event: serde_json::Value) {
     let _ = app.emit("dictation-event", line);
 }
 
-fn update_hud_window(
-    app: &AppHandle,
-    event_type: Option<&str>,
-    event: Option<&serde_json::Value>,
-) {
+fn update_hud_window(app: &AppHandle, event_type: Option<&str>, event: Option<&serde_json::Value>) {
     match dictation_event_visibility(event_type) {
         DictationEventVisibility::Show if should_show_hud_window_for_type(event_type) => {
             show_hud_window(app)
@@ -1332,7 +1332,7 @@ mod tests {
         let outcome = outcome_from_transcription_result(Ok(TranscriptionProviderResult {
             text: "Paste this transcript.".to_string(),
             language: Some("en".to_string()),
-            provider: "mock".to_string(),
+            provider: crate::providers::VENICE_PROVIDER.to_string(),
         }));
 
         assert_eq!(
@@ -1369,19 +1369,19 @@ mod tests {
     }
 
     #[test]
-    fn dictation_rejects_mock_provider() {
-        let err = dictation_transcription_provider(MOCK_PROVIDER.to_string())
-            .expect_err("dictation should not paste mock transcripts");
+    fn dictation_rejects_non_venice_provider() {
+        let err = dictation_transcription_provider("mock".to_string())
+            .expect_err("dictation should only accept Venice transcripts");
 
         assert_eq!(err.code, "dictation_provider_not_configured");
     }
 
     #[test]
-    fn dictation_accepts_real_provider() {
+    fn dictation_accepts_venice_provider() {
         assert_eq!(
-            dictation_transcription_provider(crate::providers::OPENAI_PROVIDER.to_string())
-                .expect("openai should be accepted"),
-            crate::providers::OPENAI_PROVIDER
+            dictation_transcription_provider(crate::providers::VENICE_PROVIDER.to_string())
+                .expect("venice should be accepted"),
+            crate::providers::VENICE_PROVIDER
         );
     }
 }

@@ -2064,6 +2064,10 @@ input:focus-visible,
   justify-content: flex-end;
 }
 
+.settings-model-control {
+  min-width: min(360px, 42vw);
+}
+
 .settings-group-action {
   height: 26px;
   padding: 0 var(--sp-2);
@@ -2275,6 +2279,26 @@ input:focus-visible,
   place-items: center;
   width: 16px;
   color: var(--foreground);
+}
+
+.settings-select {
+  width: 100%;
+  min-width: 260px;
+  max-width: 360px;
+  height: 32px;
+  padding: 0 32px 0 var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: var(--fs-md);
+}
+
+.settings-select:hover,
+.settings-select:focus {
+  border-color: color-mix(in oklch, var(--foreground) 25%, transparent);
+  outline: none;
 }
 
 /* Primary solid button (Granola / Claude style) -------------------- */
