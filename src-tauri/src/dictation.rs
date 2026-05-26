@@ -14,7 +14,7 @@ use std::{
     ptr,
     sync::Mutex,
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State};
 
@@ -40,17 +40,14 @@ pub struct HotkeyStatus {
     event: Mutex<serde_json::Value>,
 }
 
-pub struct FnActivationState {
-    controller: Mutex<FnActivationController>,
+pub struct ShortcutActivationState {
+    controller: Mutex<ShortcutActivationController>,
 }
 
 #[cfg(target_os = "macos")]
 pub struct HotkeyManager {
     hotkeys: Mutex<Option<carbon_hotkeys::CarbonHotkeys>>,
 }
-
-const FN_HOLD_THRESHOLD_MS: u64 = 175;
-const FN_DOUBLE_TAP_WINDOW_MS: u64 = 350;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +82,8 @@ impl<'de> Deserialize<'de> for DictationSettings {
 
         let value = serde_json::Value::deserialize(deserializer)?;
         let has_activation_mode = value.get("activationMode").is_some();
-        let settings: SettingsValue = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+        let settings: SettingsValue =
+            serde_json::from_value(value).map_err(serde::de::Error::custom)?;
 
         Ok(Self {
             shortcut: if has_activation_mode {
@@ -258,96 +256,74 @@ pub struct DictationSettingsResponse {
 }
 
 #[derive(Debug, Default)]
-struct FnActivationController {
+struct ShortcutActivationController {
     is_down: bool,
-    hold_started: bool,
-    active_press_id: Option<u64>,
-    next_press_id: u64,
-    last_short_tap_at: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FnActivationEffect {
-    None,
-    ScheduleHold { press_id: u64 },
-    Command(FnDictationCommand),
+enum ShortcutKeyEdge {
+    Down,
+    Up,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FnDictationCommand {
+enum DictationCommand {
     StartListening,
     StopAndPaste,
     ToggleListening,
 }
 
-impl FnActivationController {
-    fn key_down(&mut self) -> FnActivationEffect {
-        if self.is_down {
-            return FnActivationEffect::None;
-        }
-
-        self.is_down = true;
-        self.hold_started = false;
-        self.next_press_id = self.next_press_id.saturating_add(1);
-        let press_id = self.next_press_id;
-        self.active_press_id = Some(press_id);
-        FnActivationEffect::ScheduleHold { press_id }
-    }
-
-    fn hold_elapsed(&mut self, press_id: u64) -> Option<FnDictationCommand> {
-        if !self.is_down || self.active_press_id != Some(press_id) || self.hold_started {
-            return None;
-        }
-
-        self.hold_started = true;
-        self.last_short_tap_at = None;
-        Some(FnDictationCommand::StartListening)
-    }
-
-    fn key_up(&mut self, now: Instant) -> FnActivationEffect {
-        if !self.is_down {
-            return FnActivationEffect::None;
-        }
-
-        self.is_down = false;
-        self.active_press_id = None;
-
-        if self.hold_started {
-            self.hold_started = false;
-            self.last_short_tap_at = None;
-            return FnActivationEffect::Command(FnDictationCommand::StopAndPaste);
-        }
-
-        let is_double_tap = self
-            .last_short_tap_at
-            .and_then(|last| now.checked_duration_since(last))
-            .is_some_and(|elapsed| elapsed <= Duration::from_millis(FN_DOUBLE_TAP_WINDOW_MS));
-
-        if is_double_tap {
-            self.last_short_tap_at = None;
-            FnActivationEffect::Command(FnDictationCommand::ToggleListening)
-        } else {
-            self.last_short_tap_at = Some(now);
-            FnActivationEffect::None
+impl ShortcutActivationController {
+    fn handle_edge(
+        &mut self,
+        edge: ShortcutKeyEdge,
+        mode: DictationActivationMode,
+    ) -> Option<DictationCommand> {
+        match (mode, edge) {
+            (DictationActivationMode::PushToTalk, ShortcutKeyEdge::Down) => {
+                if self.is_down {
+                    None
+                } else {
+                    self.is_down = true;
+                    Some(DictationCommand::StartListening)
+                }
+            }
+            (DictationActivationMode::PushToTalk, ShortcutKeyEdge::Up) => {
+                if self.is_down {
+                    self.is_down = false;
+                    Some(DictationCommand::StopAndPaste)
+                } else {
+                    None
+                }
+            }
+            (DictationActivationMode::Toggle, ShortcutKeyEdge::Down) => {
+                if self.is_down {
+                    None
+                } else {
+                    self.is_down = true;
+                    Some(DictationCommand::ToggleListening)
+                }
+            }
+            (DictationActivationMode::Toggle, ShortcutKeyEdge::Up) => {
+                self.is_down = false;
+                None
+            }
         }
     }
 
     fn reset(&mut self) {
         self.is_down = false;
-        self.hold_started = false;
-        self.active_press_id = None;
-        self.last_short_tap_at = None;
     }
 }
 
-impl FnDictationCommand {
-    fn helper_command(self) -> serde_json::Value {
+impl DictationCommand {
+    fn helper_command(self, shortcut_label: &str) -> serde_json::Value {
         match self {
             Self::StartListening => serde_json::json!({ "type": "start_listening" }),
             Self::StopAndPaste => serde_json::json!({ "type": "stop_and_paste" }),
             Self::ToggleListening => serde_json::json!({
                 "type": "toggle_listening",
-                "shortcut": "Fn",
+                "shortcut": shortcut_label,
             }),
         }
     }
@@ -416,8 +392,8 @@ pub fn setup(app: &mut tauri::App) {
     app.manage(LastDictationEvent {
         event: Mutex::new(None),
     });
-    app.manage(FnActivationState {
-        controller: Mutex::new(FnActivationController::default()),
+    app.manage(ShortcutActivationState {
+        controller: Mutex::new(ShortcutActivationController::default()),
     });
 
     let helper = spawn_helper(app.handle()).ok();
@@ -547,7 +523,7 @@ pub fn set_dictation_shortcut(
     let settings = update_settings(&state, |settings| {
         settings.shortcut = shortcut;
     })?;
-    reset_fn_activation(&app);
+    reset_shortcut_activation(&app);
 
     {
         let mut active_hotkeys = hotkey_manager
@@ -584,7 +560,7 @@ pub fn set_dictation_activation_mode(
     let settings = update_settings(&state, |settings| {
         settings.activation_mode = activation_mode;
     })?;
-    reset_fn_activation(&app);
+    reset_shortcut_activation(&app);
     Ok(settings)
 }
 
@@ -663,102 +639,57 @@ fn apply_microphone_setting(
     )
 }
 
-fn handle_fn_key_event(app: &AppHandle, event_type: Option<&str>) {
+fn handle_shortcut_key_event(app: &AppHandle, event_type: Option<&str>) {
     let Some(event_type) = event_type else {
         return;
     };
 
-    let effect = match event_type {
-        "fn_key_down" => {
-            if !selected_shortcut_is_bare_fn(app) {
-                reset_fn_activation(app);
-                return;
-            }
-            app.try_state::<FnActivationState>()
-                .and_then(|state| {
-                    state
-                        .controller
-                        .lock()
-                        .ok()
-                        .map(|mut state| state.key_down())
-                })
-                .unwrap_or(FnActivationEffect::None)
-        }
-        "fn_key_up" => {
-            if !selected_shortcut_is_bare_fn(app) {
-                reset_fn_activation(app);
-                return;
-            }
-            let now = Instant::now();
-            app.try_state::<FnActivationState>()
-                .and_then(|state| {
-                    state
-                        .controller
-                        .lock()
-                        .ok()
-                        .map(|mut state| state.key_up(now))
-                })
-                .unwrap_or(FnActivationEffect::None)
-        }
+    let edge = match event_type {
+        "fn_key_down" | "shortcut_key_down" => ShortcutKeyEdge::Down,
+        "fn_key_up" | "shortcut_key_up" => ShortcutKeyEdge::Up,
         _ => return,
     };
 
-    apply_fn_activation_effect(app, effect);
-}
+    let Some(settings) = current_dictation_settings(app) else {
+        reset_shortcut_activation(app);
+        return;
+    };
 
-fn selected_shortcut_is_bare_fn(app: &AppHandle) -> bool {
-    app.try_state::<DictationSettingsState>()
+    if matches!(event_type, "fn_key_down" | "fn_key_up") && !is_bare_fn_shortcut(&settings.shortcut)
+    {
+        reset_shortcut_activation(app);
+        return;
+    }
+
+    let command = app
+        .try_state::<ShortcutActivationState>()
         .and_then(|state| {
             state
-                .settings
+                .controller
                 .lock()
                 .ok()
-                .map(|settings| is_bare_fn_shortcut(&settings.shortcut))
-        })
-        .unwrap_or(false)
+                .and_then(|mut state| state.handle_edge(edge, settings.activation_mode))
+        });
+
+    if let Some(command) = command {
+        send_dictation_command(app, command, &settings.shortcut.label);
+    }
 }
 
-fn reset_fn_activation(app: &AppHandle) {
-    if let Some(state) = app.try_state::<FnActivationState>() {
+fn current_dictation_settings(app: &AppHandle) -> Option<DictationSettings> {
+    app.try_state::<DictationSettingsState>()
+        .and_then(|state| state.settings.lock().ok().map(|settings| settings.clone()))
+}
+
+fn reset_shortcut_activation(app: &AppHandle) {
+    if let Some(state) = app.try_state::<ShortcutActivationState>() {
         if let Ok(mut controller) = state.controller.lock() {
             controller.reset();
         }
     }
 }
 
-fn apply_fn_activation_effect(app: &AppHandle, effect: FnActivationEffect) {
-    match effect {
-        FnActivationEffect::None => {}
-        FnActivationEffect::Command(command) => send_fn_dictation_command(app, command),
-        FnActivationEffect::ScheduleHold { press_id } => schedule_fn_hold(app, press_id),
-    }
-}
-
-fn schedule_fn_hold(app: &AppHandle, press_id: u64) {
-    let app = app.clone();
-    thread::spawn(move || {
-        thread::sleep(Duration::from_millis(FN_HOLD_THRESHOLD_MS));
-
-        if !selected_shortcut_is_bare_fn(&app) {
-            reset_fn_activation(&app);
-            return;
-        }
-
-        let command = app.try_state::<FnActivationState>().and_then(|state| {
-            state
-                .controller
-                .lock()
-                .ok()
-                .and_then(|mut state| state.hold_elapsed(press_id))
-        });
-
-        if let Some(command) = command {
-            send_fn_dictation_command(&app, command);
-        }
-    });
-}
-
-fn send_fn_dictation_command(app: &AppHandle, command: FnDictationCommand) {
+fn send_dictation_command(app: &AppHandle, command: DictationCommand, shortcut_label: &str) {
     let Some(state) = app.try_state::<HelperState>() else {
         emit_dictation_event_value(
             app,
@@ -770,7 +701,7 @@ fn send_fn_dictation_command(app: &AppHandle, command: FnDictationCommand) {
         return;
     };
 
-    if let Err(error) = send_helper_command(&state, command.helper_command()) {
+    if let Err(error) = send_helper_command(&state, command.helper_command(shortcut_label)) {
         emit_dictation_event_value(app, app_error_event(error));
     }
 }
@@ -948,7 +879,7 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         .and_then(|event| event.get("type"))
         .and_then(serde_json::Value::as_str);
 
-    handle_fn_key_event(app, event_type);
+    handle_shortcut_key_event(app, event_type);
 
     if matches!(event_type, Some("recording_ready")) {
         if let Some(event) = event.as_ref() {
@@ -1607,7 +1538,10 @@ mod tests {
         assert_eq!(settings.shortcut.code, "Fn");
         assert_eq!(settings.shortcut.key_code, 0);
         assert!(settings.shortcut.modifiers.function);
-        assert_eq!(settings.activation_mode, DictationActivationMode::PushToTalk);
+        assert_eq!(
+            settings.activation_mode,
+            DictationActivationMode::PushToTalk
+        );
     }
 
     #[test]
@@ -1631,7 +1565,10 @@ mod tests {
         .expect("legacy settings should deserialize");
 
         assert_eq!(settings.shortcut, DictationShortcutSetting::bare_fn());
-        assert_eq!(settings.activation_mode, DictationActivationMode::PushToTalk);
+        assert_eq!(
+            settings.activation_mode,
+            DictationActivationMode::PushToTalk
+        );
         assert_eq!(settings.microphone.id.as_deref(), Some("usb"));
         assert_eq!(settings.microphone.name.as_deref(), Some("USB Mic"));
     }
@@ -1693,77 +1630,53 @@ mod tests {
     }
 
     #[test]
-    fn fn_activation_double_tap_toggles() {
-        let mut controller = FnActivationController::default();
-        let now = Instant::now();
+    fn push_to_talk_starts_on_down_and_stops_on_up() {
+        let mut controller = ShortcutActivationController::default();
 
         assert_eq!(
-            controller.key_down(),
-            FnActivationEffect::ScheduleHold { press_id: 1 }
-        );
-        assert_eq!(controller.key_up(now), FnActivationEffect::None);
-        assert_eq!(
-            controller.key_down(),
-            FnActivationEffect::ScheduleHold { press_id: 2 }
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationActivationMode::PushToTalk),
+            Some(DictationCommand::StartListening)
         );
         assert_eq!(
-            controller.key_up(now + Duration::from_millis(120)),
-            FnActivationEffect::Command(FnDictationCommand::ToggleListening)
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationActivationMode::PushToTalk),
+            Some(DictationCommand::StopAndPaste)
         );
     }
 
     #[test]
-    fn fn_activation_hold_starts_and_release_stops() {
-        let mut controller = FnActivationController::default();
-        let now = Instant::now();
+    fn toggle_mode_toggles_on_down_and_ignores_up() {
+        let mut controller = ShortcutActivationController::default();
 
         assert_eq!(
-            controller.key_down(),
-            FnActivationEffect::ScheduleHold { press_id: 1 }
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationActivationMode::Toggle),
+            Some(DictationCommand::ToggleListening)
         );
         assert_eq!(
-            controller.hold_elapsed(1),
-            Some(FnDictationCommand::StartListening)
-        );
-        assert_eq!(
-            controller.key_up(now + Duration::from_millis(FN_HOLD_THRESHOLD_MS)),
-            FnActivationEffect::Command(FnDictationCommand::StopAndPaste)
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationActivationMode::Toggle),
+            None
         );
     }
 
     #[test]
-    fn fn_activation_release_before_threshold_cancels_hold() {
-        let mut controller = FnActivationController::default();
-        let now = Instant::now();
+    fn shortcut_activation_ignores_duplicate_edges() {
+        let mut controller = ShortcutActivationController::default();
 
         assert_eq!(
-            controller.key_down(),
-            FnActivationEffect::ScheduleHold { press_id: 1 }
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationActivationMode::PushToTalk),
+            Some(DictationCommand::StartListening)
         );
-        assert_eq!(controller.key_up(now), FnActivationEffect::None);
-        assert_eq!(controller.hold_elapsed(1), None);
-    }
-
-    #[test]
-    fn fn_activation_ignores_duplicate_edges() {
-        let mut controller = FnActivationController::default();
-        let now = Instant::now();
-
         assert_eq!(
-            controller.key_down(),
-            FnActivationEffect::ScheduleHold { press_id: 1 }
+            controller.handle_edge(ShortcutKeyEdge::Down, DictationActivationMode::PushToTalk),
+            None
         );
-        assert_eq!(controller.key_down(), FnActivationEffect::None);
         assert_eq!(
-            controller.hold_elapsed(1),
-            Some(FnDictationCommand::StartListening)
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationActivationMode::PushToTalk),
+            Some(DictationCommand::StopAndPaste)
         );
-        assert_eq!(controller.hold_elapsed(1), None);
         assert_eq!(
-            controller.key_up(now),
-            FnActivationEffect::Command(FnDictationCommand::StopAndPaste)
+            controller.handle_edge(ShortcutKeyEdge::Up, DictationActivationMode::PushToTalk),
+            None
         );
-        assert_eq!(controller.key_up(now), FnActivationEffect::None);
     }
 
     #[test]
