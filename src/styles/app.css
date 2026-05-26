@@ -1968,6 +1968,14 @@ input:focus-visible,
   color: var(--destructive);
 }
 
+.settings-row-inline-error {
+  display: block;
+  margin-top: 2px;
+  color: var(--destructive);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
 /* Group label sits outside the card so multiple cards can sit under one
  * section, like macOS System Settings. */
 .settings-group {
@@ -1976,9 +1984,16 @@ input:focus-visible,
   margin-bottom: var(--sp-6);
 }
 
+.settings-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: 0 var(--sp-1);
+}
+
 .settings-group-heading {
   margin: 0;
-  padding: 0 var(--sp-1);
   color: color-mix(in oklch, var(--foreground) 65%, var(--muted-foreground));
   font-size: var(--fs-md);
   font-weight: 500;
@@ -2042,6 +2057,42 @@ input:focus-visible,
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
+}
+
+.settings-permission-control {
+  min-width: 225px;
+  justify-content: flex-end;
+}
+
+.settings-group-action {
+  height: 26px;
+  padding: 0 var(--sp-2);
+  color: var(--muted-foreground);
+}
+
+.permission-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 112px;
+  height: 24px;
+  padding: 0 var(--sp-3);
+  border-radius: var(--r-md);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.permission-pill[data-state="allowed"] {
+  background: color-mix(in oklch, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.permission-pill[data-state="blocked"] {
+  background: color-mix(in oklch, var(--destructive) 12%, transparent);
+  color: var(--destructive);
 }
 
 /* Keycap frame — wraps one or more keycaps in a 28px-tall container with a

@@ -361,6 +361,12 @@ export async function checkRecordingSourceReadiness(
   );
 }
 
+export async function openPrivacySettings(
+  pane: "microphone" | "accessibility" | "systemAudio",
+) {
+  return invoke<void>("open_privacy_settings", { request: { pane } });
+}
+
 export async function startRecording(
   noteId: string,
   sourceMode: RecordingSourceMode = "microphoneOnly",

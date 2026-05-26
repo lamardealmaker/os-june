@@ -6,6 +6,7 @@ import { FoldersWorkspace } from "../components/folders/FoldersWorkspace";
 import { NoteFromFolderCrumb } from "../components/folders/NoteFromFolderCrumb";
 import { NoteEditor } from "../components/note-editor/NoteEditor";
 import { RecoveryBanner } from "../components/recorder/RecoveryBanner";
+import { AppSettings } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
 import {
   assignNoteToFolder,
@@ -373,7 +374,14 @@ export function App() {
             }
           />
           <div className="workspace">
-            {activeView === "dictation" ? (
+            {activeView === "settings" ? (
+              <AppSettings
+                sourceMode={sourceMode}
+                sourceReadiness={sourceReadiness}
+                checkingSourceReadiness={checkingSourceReadiness}
+                onSourceModeChange={setSourceMode}
+              />
+            ) : activeView === "dictation" ? (
               <DictationSettings />
             ) : activeView === "folders" ? (
               <FoldersWorkspace
