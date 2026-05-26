@@ -16,6 +16,8 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State};
 
+const DICTATION_TRANSCRIPTION_CONTEXT: &str = "Transcribe this as clean hands-free dictation for direct insertion into the active app. Preserve the speaker's intended words, language, and meaning. Remove filler sounds and accidental false starts when they are not meaningful, especially um, uh, ah, er, and a... stutters. Do not remove intentional articles such as a or an when they are grammatically needed. Convert spoken punctuation and formatting into text punctuation, including comma, period, question mark, exclamation point, colon, semicolon, dash, newline, and new paragraph. Convert quote/unquote, open quote/close quote, and start quote/end quote into actual quotation marks around the quoted words. Output only the dictated text.";
+
 pub struct HelperProcess {
     child: Child,
     stdin: ChildStdin,
@@ -834,7 +836,7 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
         provider,
         audio_path,
         title: "Dictation".to_string(),
-        context: None,
+        context: Some(dictation_transcription_context()),
     })
     .await;
     let outcome = outcome_from_transcription_result(result);
@@ -856,6 +858,10 @@ fn dictation_transcription_provider(provider: String) -> Result<String, AppError
         ));
     }
     Ok(provider)
+}
+
+fn dictation_transcription_context() -> String {
+    DICTATION_TRANSCRIPTION_CONTEXT.to_string()
 }
 
 fn recording_path_from_event(event: &serde_json::Value) -> Result<PathBuf, AppError> {
@@ -1366,5 +1372,16 @@ mod tests {
                 .expect("openai should be accepted"),
             crate::providers::OPENAI_PROVIDER
         );
+    }
+
+    #[test]
+    fn dictation_context_guides_clean_hands_free_typing() {
+        let context = dictation_transcription_context();
+
+        assert!(context.contains("hands-free dictation"));
+        assert!(context.contains("Remove filler sounds"));
+        assert!(context.contains("quote/unquote"));
+        assert!(context.contains("actual quotation marks"));
+        assert!(context.contains("Do not remove intentional articles"));
     }
 }
