@@ -115,6 +115,42 @@ func runOnMain(_ work: @escaping () -> Void) {
     }
 }
 
+final class FnKeyMonitor {
+    static let shared = FnKeyMonitor()
+
+    private var monitor: Any?
+    private var fnIsDown = false
+
+    private init() {}
+
+    func start() {
+        guard monitor == nil else {
+            return
+        }
+
+        guard let monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: { [weak self] event in
+            self?.handle(event)
+        }) else {
+            emit("fn_monitor_unavailable", [
+                "message": "Could not monitor Fn/Globe key events.",
+            ])
+            return
+        }
+
+        self.monitor = monitor
+    }
+
+    private func handle(_ event: NSEvent) {
+        let nextIsDown = event.modifierFlags.contains(.function)
+        guard nextIsDown != fnIsDown else {
+            return
+        }
+
+        fnIsDown = nextIsDown
+        emit(nextIsDown ? "fn_key_down" : "fn_key_up")
+    }
+}
+
 final class FocusTargetController {
     static let shared = FocusTargetController()
 
@@ -794,6 +830,7 @@ func handleCommandLine(_ line: String) {
 }
 
 emit("ready")
+FnKeyMonitor.shared.start()
 FocusTargetController.shared.start()
 dictation.emitDiagnostics()
 
