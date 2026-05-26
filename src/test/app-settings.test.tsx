@@ -70,13 +70,23 @@ describe("AppSettings", () => {
                 id: "nvidia/parakeet-tdt-0.6b-v3",
                 name: "Parakeet",
                 modelType: "asr",
-                traits: [],
+                description: "Speech-to-text model for transcribing audio.",
+                privacy: "private",
+                pricing: { input: { usd: 0.002 }, output: { usd: 0.006 } },
+                contextTokens: 8192,
+                traits: ["default"],
+                capabilities: [],
               },
               {
                 id: "transcribe-large",
                 name: "Transcribe Large",
                 modelType: "asr",
+                description: "Large transcription model.",
+                privacy: "anonymized",
+                pricing: { input: { usd: 0.004 }, output: { usd: 0.008 } },
+                contextTokens: 16384,
                 traits: [],
+                capabilities: [],
               },
             ]
           : [
@@ -84,13 +94,23 @@ describe("AppSettings", () => {
                 id: "zai-org-glm-5",
                 name: "GLM 5",
                 modelType: "text",
-                traits: [],
+                description: "Text model for writing notes.",
+                privacy: "private",
+                pricing: { input: { usd: 0.15 }, output: { usd: 0.6 } },
+                contextTokens: 32768,
+                traits: ["reasoning"],
+                capabilities: ["supportsFunctionCalling"],
               },
               {
                 id: "venice-uncensored",
                 name: "Venice Uncensored",
                 modelType: "text",
-                traits: [],
+                description: "Uncensored text model.",
+                privacy: "private",
+                pricing: { input: { usd: 0.2 }, output: { usd: 0.8 } },
+                contextTokens: 65536,
+                traits: ["uncensored"],
+                capabilities: [],
               },
             ],
     }));
@@ -196,18 +216,33 @@ describe("AppSettings", () => {
     await waitFor(() =>
       expect(mocks.listVeniceModels).toHaveBeenCalledWith("transcription"),
     );
-    await user.selectOptions(
-      screen.getByLabelText("Transcription model"),
-      "transcribe-large",
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Change transcription model",
+      }),
+    );
+    expect((await screen.findAllByText("Private")).length).toBeGreaterThan(0);
+    expect(
+      screen.getAllByText("$0.0020 in / $0.0060 out").length,
+    ).toBeGreaterThan(0);
+    await user.click(
+      await screen.findByRole("option", { name: /Transcribe Large/ }),
     );
     expect(mocks.setVeniceModel).toHaveBeenCalledWith(
       "transcription",
       "transcribe-large",
     );
 
-    await user.selectOptions(
-      screen.getByLabelText("Note generation model"),
-      "venice-uncensored",
+    await user.click(
+      screen.getByRole("button", {
+        name: "Change note generation model",
+      }),
+    );
+    expect((await screen.findAllByText("Uncensored")).length).toBeGreaterThan(
+      0,
+    );
+    await user.click(
+      await screen.findByRole("option", { name: /Venice Uncensored/ }),
     );
     expect(mocks.setVeniceModel).toHaveBeenCalledWith(
       "generation",

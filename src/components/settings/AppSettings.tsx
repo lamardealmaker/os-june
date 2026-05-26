@@ -3,7 +3,7 @@ import { IconArrowRotateClockwise } from "central-icons/IconArrowRotateClockwise
 import { IconChevronDownSmall } from "central-icons/IconChevronDownSmall";
 import { IconSettingsGear1 } from "central-icons/IconSettingsGear1";
 import { IconCheckmark1Small } from "central-icons/IconCheckmark1Small";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   dictationHelperCommand,
   dictationSettings,
@@ -23,6 +23,7 @@ import type {
   RecordingSourceReadinessDto,
   VeniceModelDto,
 } from "../../lib/tauri";
+import { Dialog } from "../ui/Dialog";
 import { Switch } from "../ui/Switch";
 
 const DEFAULT_SETTINGS: DictationSettingsDto = {
@@ -79,6 +80,8 @@ export function AppSettings({
   const [permissions, setPermissions] = useState<DictationPermissionStatus>({});
   const [status, setStatus] = useState<string>();
   const [micOpen, setMicOpen] = useState(false);
+  const [pickerMode, setPickerMode] = useState<ProviderModelMode>();
+  const [modelSearch, setModelSearch] = useState("");
   const micWrapRef = useRef<HTMLDivElement>(null);
   const systemOn = sourceMode === "microphonePlusSystem";
   const systemReadiness = sourceReadiness?.sources.find(
@@ -247,6 +250,24 @@ export function AppSettings({
     veniceModels.generation,
     providerSettings.generationModel,
   );
+  const pickerOptions = pickerMode ? modelOptionsForMode(pickerMode) : [];
+  const pickerValue = pickerMode ? modelValueForMode(pickerMode) : "";
+
+  function modelOptionsForMode(mode: ProviderModelMode) {
+    return mode === "transcription" ? transcriptionOptions : generationOptions;
+  }
+
+  function modelValueForMode(mode: ProviderModelMode) {
+    return mode === "transcription"
+      ? providerSettings.transcriptionModel
+      : providerSettings.generationModel;
+  }
+
+  function openModelPicker(mode: ProviderModelMode) {
+    setPickerMode(mode);
+    setModelSearch("");
+    void requestVeniceModels(mode);
+  }
 
   return (
     <div className="settings-page">
@@ -381,24 +402,36 @@ export function AppSettings({
               description="Used for note recordings and dictation."
               value={providerSettings.transcriptionModel}
               options={transcriptionOptions}
-              ariaLabel="Transcription model"
-              onChange={(modelId) =>
-                void selectVeniceModel("transcription", modelId)
-              }
+              onOpen={() => openModelPicker("transcription")}
             />
             <ModelRow
               title="Note generation"
               description="Used to write generated notes from transcripts."
               value={providerSettings.generationModel}
               options={generationOptions}
-              ariaLabel="Note generation model"
-              onChange={(modelId) =>
-                void selectVeniceModel("generation", modelId)
-              }
+              onOpen={() => openModelPicker("generation")}
             />
           </div>
         </div>
       </section>
+
+      <ModelPickerDialog
+        open={!!pickerMode}
+        mode={pickerMode ?? "transcription"}
+        value={pickerValue}
+        options={pickerOptions}
+        search={modelSearch}
+        onSearchChange={setModelSearch}
+        onClose={() => setPickerMode(undefined)}
+        onRefresh={() =>
+          pickerMode ? void requestVeniceModels(pickerMode) : undefined
+        }
+        onSelect={(modelId) => {
+          if (!pickerMode) return;
+          void selectVeniceModel(pickerMode, modelId);
+          setPickerMode(undefined);
+        }}
+      />
 
       <section
         className="settings-group"
@@ -447,16 +480,15 @@ function ModelRow({
   description,
   value,
   options,
-  ariaLabel,
-  onChange,
+  onOpen,
 }: {
   title: string;
   description: string;
   value: string;
   options: VeniceModelDto[];
-  ariaLabel: string;
-  onChange: (modelId: string) => void;
+  onOpen: () => void;
 }) {
+  const model = selectedModel(options, value);
   return (
     <div className="settings-row">
       <div className="settings-row-info">
@@ -464,23 +496,289 @@ function ModelRow({
         <p className="settings-row-description">{description}</p>
       </div>
       <div className="settings-row-control settings-model-control">
-        <select
-          className="settings-select"
-          aria-label={ariaLabel}
-          value={value}
-          onChange={(event) => onChange(event.currentTarget.value)}
+        <button
+          type="button"
+          className="model-summary-button"
+          onClick={onOpen}
+          aria-label={`Change ${title.toLowerCase()} model`}
         >
-          {options.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.name === model.id
-                ? model.id
-                : `${model.name} (${model.id})`}
-            </option>
-          ))}
-        </select>
+          <span className="model-summary-main">
+            <span className="model-summary-name">{model.name}</span>
+            <span className="model-summary-id">{model.id}</span>
+          </span>
+          <span className="model-summary-meta">
+            <ModelBadges model={model} compact />
+            <span className="model-summary-price">{pricingLabel(model)}</span>
+          </span>
+          <IconChevronDownSmall size={14} />
+        </button>
       </div>
     </div>
   );
+}
+
+function ModelPickerDialog({
+  open,
+  mode,
+  value,
+  options,
+  search,
+  onSearchChange,
+  onClose,
+  onRefresh,
+  onSelect,
+}: {
+  open: boolean;
+  mode: ProviderModelMode;
+  value: string;
+  options: VeniceModelDto[];
+  search: string;
+  onSearchChange: (value: string) => void;
+  onClose: () => void;
+  onRefresh: () => void;
+  onSelect: (modelId: string) => void;
+}) {
+  const filteredOptions = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return options;
+    return options.filter((model) =>
+      [
+        model.name,
+        model.id,
+        model.description,
+        model.privacy,
+        ...model.traits,
+        ...model.capabilities,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [options, search]);
+  const title =
+    mode === "transcription" ? "Transcription model" : "Note generation model";
+
+  return (
+    <Dialog
+      open={open}
+      onClose={onClose}
+      title={title}
+      width={760}
+      className="model-picker-dialog"
+      initialFocusSelector=".model-picker-search"
+      footer={
+        <button type="button" className="btn btn-ghost" onClick={onRefresh}>
+          <IconArrowRotateClockwise size={14} />
+          Refresh
+        </button>
+      }
+    >
+      <div className="model-picker-toolbar">
+        <input
+          className="model-picker-search"
+          value={search}
+          onChange={(event) => onSearchChange(event.currentTarget.value)}
+          placeholder="Search models"
+          aria-label="Search models"
+        />
+      </div>
+      <div className="model-picker-list" role="listbox" aria-label={title}>
+        {filteredOptions.map((model) => {
+          const selected = model.id === value;
+          return (
+            <button
+              key={model.id}
+              type="button"
+              className="model-picker-option"
+              role="option"
+              aria-selected={selected}
+              data-selected={selected}
+              onClick={() => onSelect(model.id)}
+            >
+              <span className="model-picker-option-header">
+                <span className="model-picker-title-group">
+                  <span className="model-picker-name">{model.name}</span>
+                  <span className="model-picker-id">{model.id}</span>
+                </span>
+                <span className="model-picker-selected" aria-hidden>
+                  {selected ? <IconCheckmark1Small size={15} /> : null}
+                </span>
+              </span>
+              <span className="model-picker-description">
+                {model.description ?? "No description available."}
+              </span>
+              <span className="model-picker-facts">
+                <span>{pricingLabel(model)}</span>
+                <span>{contextLabel(model)}</span>
+              </span>
+              <ModelBadges model={model} />
+            </button>
+          );
+        })}
+      </div>
+    </Dialog>
+  );
+}
+
+function selectedModel(options: VeniceModelDto[], value: string) {
+  return (
+    options.find((model) => model.id === value) ?? {
+      id: value,
+      name: value,
+      modelType: "",
+      traits: [],
+      capabilities: [],
+    }
+  );
+}
+
+function ModelBadges({
+  model,
+  compact = false,
+}: {
+  model: VeniceModelDto;
+  compact?: boolean;
+}) {
+  const badges = modelBadges(model);
+  const visible = compact ? badges.slice(0, 2) : badges.slice(0, 6);
+  if (visible.length === 0) {
+    return compact ? null : (
+      <span className="model-badge" data-kind="neutral">
+        Standard
+      </span>
+    );
+  }
+  return (
+    <span className="model-badges">
+      {visible.map((badge) => (
+        <span
+          key={`${badge.kind}-${badge.label}`}
+          className="model-badge"
+          data-kind={badge.kind}
+        >
+          {badge.label}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function modelBadges(model: VeniceModelDto) {
+  const badges: Array<{ label: string; kind: string }> = [];
+  if (model.privacy) {
+    badges.push({
+      label: privacyLabel(model.privacy),
+      kind: model.privacy.toLowerCase().includes("private")
+        ? "private"
+        : "privacy",
+    });
+  }
+  for (const trait of [...model.traits, ...model.capabilities]) {
+    const normalized = trait.toLowerCase();
+    if (normalized.includes("uncensored")) {
+      badges.push({ label: "Uncensored", kind: "uncensored" });
+    } else if (
+      normalized.includes("anonymous") ||
+      normalized.includes("anonymized")
+    ) {
+      badges.push({ label: "Anon", kind: "anon" });
+    } else if (normalized.includes("reasoning")) {
+      badges.push({ label: "Reasoning", kind: "capability" });
+    } else if (normalized.includes("function")) {
+      badges.push({ label: "Tools", kind: "capability" });
+    } else if (normalized.includes("vision")) {
+      badges.push({ label: "Vision", kind: "capability" });
+    }
+  }
+  return uniqueBadges(badges);
+}
+
+function uniqueBadges(badges: Array<{ label: string; kind: string }>) {
+  const seen = new Set<string>();
+  return badges.filter((badge) => {
+    const key = `${badge.kind}:${badge.label}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function privacyLabel(value: string) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "private") return "Private";
+  if (normalized.includes("anonymous") || normalized.includes("anonymized")) {
+    return "Anon";
+  }
+  return titleCase(value);
+}
+
+function pricingLabel(model: VeniceModelDto) {
+  const pricing = model.pricing;
+  if (!pricing || typeof pricing !== "object") return "Pricing unavailable";
+  const input = priceForPath(pricing, ["input", "usd"]);
+  const output = priceForPath(pricing, ["output", "usd"]);
+  if (input !== undefined && output !== undefined) {
+    return `$${formatUsd(input)} in / $${formatUsd(output)} out`;
+  }
+  const usdValues = collectUsdValues(pricing);
+  if (usdValues.length === 1) return `$${formatUsd(usdValues[0])}`;
+  if (usdValues.length > 1) {
+    const min = Math.min(...usdValues);
+    const max = Math.max(...usdValues);
+    return min === max
+      ? `$${formatUsd(min)}`
+      : `$${formatUsd(min)}-$${formatUsd(max)}`;
+  }
+  return "Pricing unavailable";
+}
+
+function priceForPath(value: unknown, path: string[]) {
+  let current: unknown = value;
+  for (const key of path) {
+    if (!current || typeof current !== "object" || !(key in current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "number" ? current : undefined;
+}
+
+function collectUsdValues(value: unknown): number[] {
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value as Record<string, unknown>).flatMap(
+    ([key, nested]) => {
+      if (key === "usd" && typeof nested === "number") return [nested];
+      return collectUsdValues(nested);
+    },
+  );
+}
+
+function formatUsd(value: number) {
+  return value >= 1 ? value.toFixed(2) : value.toFixed(4).replace(/0+$/, "0");
+}
+
+function contextLabel(model: VeniceModelDto) {
+  if (!model.contextTokens) return "Context unavailable";
+  if (model.contextTokens >= 1_000_000) {
+    return `${trimNumber(model.contextTokens / 1_000_000)}M context`;
+  }
+  if (model.contextTokens >= 1_000) {
+    return `${trimNumber(model.contextTokens / 1_000)}K context`;
+  }
+  return `${model.contextTokens} context`;
+}
+
+function trimNumber(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function titleCase(value: string) {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function modelOptions(models: VeniceModelDto[], selectedModel: string) {
@@ -493,6 +791,7 @@ function modelOptions(models: VeniceModelDto[], selectedModel: string) {
       name: selectedModel,
       modelType: "",
       traits: [],
+      capabilities: [],
     },
     ...models,
   ];

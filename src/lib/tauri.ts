@@ -126,7 +126,11 @@ export type VeniceModelDto = {
   name: string;
   modelType: string;
   description?: string;
+  privacy?: string;
+  pricing?: unknown;
+  contextTokens?: number;
   traits: string[];
+  capabilities: string[];
 };
 
 export type VeniceModelsResponse = {

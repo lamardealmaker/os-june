@@ -66,7 +66,14 @@ pub struct VeniceModelDto {
     pub model_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privacy: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_tokens: Option<i64>,
     pub traits: Vec<String>,
+    pub capabilities: Vec<String>,
 }
 
 pub fn configured_provider() -> String {
@@ -390,6 +397,11 @@ struct VeniceModelApiItem {
 struct VeniceModelSpec {
     name: Option<String>,
     description: Option<String>,
+    privacy: Option<String>,
+    pricing: Option<serde_json::Value>,
+    #[serde(rename = "availableContextTokens")]
+    available_context_tokens: Option<i64>,
+    capabilities: Option<serde_json::Value>,
     traits: Option<Vec<String>>,
     offline: Option<bool>,
 }
@@ -401,32 +413,78 @@ fn venice_model_items(response: VeniceModelsApiResponse, model_type: &str) -> Ve
         .filter(|model| model.model_type == model_type)
         .filter(|model| model.model_spec.as_ref().and_then(|spec| spec.offline) != Some(true))
         .map(|model| {
-            let name = model
-                .model_spec
+            let spec = model.model_spec;
+            let name = spec
                 .as_ref()
                 .and_then(|spec| spec.name.as_deref())
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .unwrap_or(&model.id)
                 .to_string();
+            let description = spec.as_ref().and_then(|spec| {
+                spec.description
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+            });
+            let privacy = spec.as_ref().and_then(|spec| {
+                spec.privacy
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+            });
+            let pricing = spec.as_ref().and_then(|spec| spec.pricing.clone());
+            let context_tokens = spec.as_ref().and_then(|spec| spec.available_context_tokens);
+            let traits = spec
+                .as_ref()
+                .and_then(|spec| spec.traits.clone())
+                .unwrap_or_default();
+            let capabilities = spec
+                .as_ref()
+                .and_then(|spec| spec.capabilities.as_ref())
+                .map(capability_names)
+                .unwrap_or_default();
             VeniceModelDto {
                 id: model.id,
                 name,
                 model_type: model.model_type,
-                description: model.model_spec.as_ref().and_then(|spec| {
-                    spec.description
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(ToString::to_string)
-                }),
-                traits: model
-                    .model_spec
-                    .and_then(|spec| spec.traits)
-                    .unwrap_or_default(),
+                description,
+                privacy,
+                pricing,
+                context_tokens,
+                traits,
+                capabilities,
             }
         })
         .collect()
+}
+
+fn capability_names(value: &serde_json::Value) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_capability_names(value, "", &mut names);
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn collect_capability_names(value: &serde_json::Value, prefix: &str, names: &mut Vec<String>) {
+    let serde_json::Value::Object(map) = value else {
+        return;
+    };
+    for (key, value) in map {
+        let name = if prefix.is_empty() {
+            key.to_string()
+        } else {
+            format!("{prefix}.{key}")
+        };
+        match value {
+            serde_json::Value::Bool(true) => names.push(name),
+            serde_json::Value::Object(_) => collect_capability_names(value, &name, names),
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -450,6 +508,17 @@ mod tests {
                     "model_spec": {
                         "name": "Text Model",
                         "description": "Writes notes",
+                        "privacy": "private",
+                        "pricing": {
+                            "input": { "usd": 0.15 },
+                            "output": { "usd": 0.60 }
+                        },
+                        "availableContextTokens": 32768,
+                        "capabilities": {
+                            "supportsFunctionCalling": true,
+                            "supportsVision": false,
+                            "nested": { "enabled": true }
+                        },
                         "traits": ["default"],
                         "offline": false
                     }
@@ -479,6 +548,13 @@ mod tests {
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "text-model");
         assert_eq!(models[0].name, "Text Model");
+        assert_eq!(models[0].privacy.as_deref(), Some("private"));
+        assert_eq!(models[0].context_tokens, Some(32768));
         assert_eq!(models[0].traits, vec!["default"]);
+        assert_eq!(
+            models[0].capabilities,
+            vec!["nested.enabled", "supportsFunctionCalling"]
+        );
+        assert!(models[0].pricing.is_some());
     }
 }
