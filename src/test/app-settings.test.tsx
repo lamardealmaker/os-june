@@ -57,8 +57,8 @@ describe("AppSettings", () => {
     mocks.dictationSettings.mockResolvedValue({ settings: baseSettings });
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
-        transcriptionProvider: "openai",
-        transcriptionModel: "gpt-4o-mini-transcribe",
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
         generationModel: "zai-org-glm-5",
       },
     });
@@ -66,10 +66,24 @@ describe("AppSettings", () => {
       mode,
       modelType: mode === "transcription" ? "asr" : "text",
       selectedModel:
-        mode === "transcription" ? "gpt-4o-mini-transcribe" : "zai-org-glm-5",
+        mode === "transcription"
+          ? "nvidia/parakeet-tdt-0.6b-v3"
+          : "zai-org-glm-5",
       models:
         mode === "transcription"
           ? [
+              {
+                provider: "venice",
+                id: "nvidia/parakeet-tdt-0.6b-v3",
+                name: "Parakeet",
+                modelType: "asr",
+                description: "Speech-to-text model for transcribing audio.",
+                privacy: "private",
+                pricing: { input: { usd: 0.002 }, output: { usd: 0.006 } },
+                contextTokens: 8192,
+                traits: ["default"],
+                capabilities: [],
+              },
               {
                 provider: "openai",
                 id: "gpt-4o-mini-transcribe",
@@ -123,9 +137,12 @@ describe("AppSettings", () => {
             ],
     }));
     mocks.setVeniceModel.mockImplementation(async (mode, modelId) => ({
-      transcriptionProvider: "openai",
+      transcriptionProvider:
+        mode === "transcription" && modelId.startsWith("gpt-")
+          ? "openai"
+          : "venice",
       transcriptionModel:
-        mode === "transcription" ? modelId : "gpt-4o-mini-transcribe",
+        mode === "transcription" ? modelId : "nvidia/parakeet-tdt-0.6b-v3",
       generationModel: mode === "generation" ? modelId : "zai-org-glm-5",
     }));
     mocks.dictationHelperCommand.mockResolvedValue(undefined);
@@ -299,6 +316,9 @@ describe("AppSettings", () => {
       }),
     );
     expect((await screen.findAllByText("Private")).length).toBeGreaterThan(0);
+    expect(
+      await screen.findByRole("option", { name: /Parakeet/ }),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("$0.003/min audio").length).toBeGreaterThan(0);
     await user.click(
       await screen.findByRole("option", { name: /GPT-4o Transcribe/ }),

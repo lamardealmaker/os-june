@@ -59,8 +59,8 @@ const ACTIVATION_MODE_OPTIONS = [
 ] as const;
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
-  transcriptionProvider: "openai",
-  transcriptionModel: "gpt-4o-mini-transcribe",
+  transcriptionProvider: "venice",
+  transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
   generationModel: "zai-org-glm-5",
 };
 
@@ -625,7 +625,7 @@ export function AppSettings({
           <div className="settings-rows">
             <ModelRow
               title="Transcription"
-              description="OpenAI speech-to-text for note recordings and dictation."
+              description="Speech-to-text for note recordings and dictation."
               value={providerSettings.transcriptionModel}
               options={transcriptionOptions}
               onOpen={() => openModelPicker("transcription")}

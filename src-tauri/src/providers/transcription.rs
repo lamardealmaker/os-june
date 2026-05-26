@@ -71,7 +71,7 @@ async fn transcribe_with_openai(
         .and_then(|value| value.to_str())
         .unwrap_or("recording.wav")
         .to_string();
-    let model = crate::providers::venice_transcription_model();
+    let model = crate::providers::transcription_model();
     let audio_part = Part::bytes(audio_bytes)
         .file_name(filename)
         .mime_str(transcription_audio_mime(&request.audio_path))
@@ -145,7 +145,7 @@ async fn transcribe_with_venice(
         .and_then(|value| value.to_str())
         .unwrap_or("recording.wav")
         .to_string();
-    let model = crate::providers::venice_transcription_model();
+    let model = crate::providers::transcription_model();
     let audio_part = Part::bytes(audio_bytes)
         .file_name(filename)
         .mime_str(transcription_audio_mime(&request.audio_path))
