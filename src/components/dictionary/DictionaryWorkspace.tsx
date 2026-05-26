@@ -1,5 +1,6 @@
 import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
+import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconTrashCanSimple } from "central-icons/IconTrashCanSimple";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -95,24 +96,35 @@ export function DictionaryWorkspace() {
   }
 
   return (
-    <div className="dictionary-page">
-      <header className="dictionary-header">
-        <div>
-          <h1 className="dictionary-title">Dictionary</h1>
-          <p className="dictionary-description">
+    <section
+      className="folders-workspace dictionary-workspace"
+      aria-label="Dictionary"
+    >
+      <header className="folders-header">
+        <div className="folders-heading">
+          <h1>Dictionary</h1>
+          <p className="folders-subtitle">
             Custom words and phrases to prefer during transcription.
           </p>
         </div>
-        <input
-          className="dictionary-search"
-          value={query}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-          placeholder="Search"
-          aria-label="Search dictionary"
-        />
       </header>
 
       {status ? <p className="dictionary-status">{status}</p> : null}
+
+      {entries.length > 0 ? (
+        <div className="folders-controls">
+          <label className="folders-search">
+            <IconMagnifyingGlass size={14} />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder="Search"
+              aria-label="Search dictionary"
+            />
+          </label>
+        </div>
+      ) : null}
 
       <section className="dictionary-card" aria-label="Add dictionary entry">
         <div className="dictionary-form dictionary-form-simple">
@@ -188,7 +200,7 @@ export function DictionaryWorkspace() {
           </div>
         )}
       </section>
-    </div>
+    </section>
   );
 }
 

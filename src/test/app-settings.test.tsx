@@ -59,6 +59,7 @@ const baseSettings: DictationSettingsDto = {
     },
   },
   microphone: {},
+  style: "standard",
 };
 
 describe("AppSettings", () => {

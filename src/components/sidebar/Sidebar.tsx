@@ -2,6 +2,7 @@ import { IconBooks } from "central-icons/IconBooks";
 import { IconDotGrid1x3Vertical } from "central-icons/IconDotGrid1x3Vertical";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconFolders } from "central-icons/IconFolders";
+import { IconFontStyle } from "central-icons/IconFontStyle";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSettingsGear1 } from "central-icons/IconSettingsGear1";
@@ -11,7 +12,12 @@ import { IconTrashCan } from "central-icons/IconTrashCan";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 
-export type SidebarView = "notes" | "settings" | "folders" | "dictionary";
+export type SidebarView =
+  | "notes"
+  | "settings"
+  | "folders"
+  | "dictionary"
+  | "styles";
 
 type SidebarProps = {
   folders: FolderDto[];
@@ -178,6 +184,18 @@ export function Sidebar({
             <IconBooks size={16} />
           </span>
           <span className="sidebar-nav-label">Dictionary</span>
+        </button>
+        <button
+          type="button"
+          className="sidebar-nav-item"
+          data-active={activeView === "styles"}
+          aria-current={activeView === "styles" ? "page" : undefined}
+          onClick={() => onChangeView("styles")}
+        >
+          <span className="sidebar-nav-icon">
+            <IconFontStyle size={16} />
+          </span>
+          <span className="sidebar-nav-label">Styles</span>
         </button>
       </nav>
 

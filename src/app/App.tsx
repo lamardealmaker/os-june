@@ -9,6 +9,7 @@ import { PermissionsOnboarding } from "../components/onboarding/PermissionsOnboa
 import { RecoveryBanner } from "../components/recorder/RecoveryBanner";
 import { AppSettings } from "../components/settings/AppSettings";
 import { Sidebar, type SidebarView } from "../components/sidebar/Sidebar";
+import { StylesWorkspace } from "../components/styles/StylesWorkspace";
 import {
   assignNoteToFolder,
   bootstrapApp,
@@ -419,6 +420,8 @@ export function App() {
                 onSourceModeChange={setSourceMode}
                 onOpenOnboarding={() => setShowOnboarding(true)}
               />
+            ) : activeView === "styles" ? (
+              <StylesWorkspace />
             ) : activeView === "dictionary" ? (
               <DictionaryWorkspace />
             ) : activeView === "folders" ? (

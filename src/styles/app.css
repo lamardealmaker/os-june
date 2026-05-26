@@ -771,41 +771,13 @@ input:focus-visible,
 
 /* Dictionary -------------------------------------------------------- */
 
-.dictionary-page {
-  display: grid;
-  gap: var(--sp-5);
-  width: 100%;
-  max-width: 860px;
-  margin: 0 auto;
-  padding: var(--sp-10) 0 var(--sp-12);
-}
-
-.dictionary-header {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
-  align-items: end;
-  gap: var(--sp-5);
-}
-
-.dictionary-title {
-  margin: 0;
-  color: var(--foreground);
-  font-family: var(--font-serif);
-  font-size: var(--fs-display);
-  font-weight: 400;
-  letter-spacing: 0;
-  line-height: 1.15;
-}
-
-.dictionary-description,
 .dictionary-status {
-  margin: var(--sp-2) 0 0;
+  margin: 0;
   color: var(--muted-foreground);
-  font-size: var(--fs-md);
-  line-height: 1.5;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
 }
 
-.dictionary-search,
 .dictionary-form input {
   width: 100%;
   height: 34px;
@@ -818,7 +790,6 @@ input:focus-visible,
   outline: 0;
 }
 
-.dictionary-search:focus,
 .dictionary-form input:focus {
   border-color: color-mix(in oklch, var(--ring) 70%, var(--border));
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 18%, transparent);
@@ -827,25 +798,25 @@ input:focus-visible,
 .dictionary-card,
 .dictionary-entry,
 .dictionary-empty {
-  border: 1px solid color-mix(in oklch, var(--border) 55%, transparent);
+  border: 1px solid transparent;
   border-radius: var(--r-lg);
-  background: var(--card);
+  background: color-mix(in oklch, var(--muted) 28%, transparent);
 }
 
 .dictionary-card {
-  padding: var(--sp-5);
+  padding: var(--sp-4);
 }
 
 .dictionary-form {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: var(--sp-4);
+  display: flex;
   align-items: end;
+  gap: var(--sp-3);
 }
 
 .dictionary-form label {
   display: grid;
   gap: var(--sp-2);
+  width: min(420px, 100%);
   min-width: 0;
 }
 
@@ -876,7 +847,8 @@ input:focus-visible,
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--sp-4);
   align-items: center;
-  padding: var(--sp-4) var(--sp-5);
+  min-height: 68px;
+  padding: var(--sp-4);
 }
 
 .dictionary-entry-main {
@@ -903,9 +875,20 @@ input:focus-visible,
 .dictionary-empty {
   display: grid;
   place-items: center;
-  min-height: 120px;
+  min-height: 160px;
   color: var(--muted-foreground);
   font-size: var(--fs-md);
+}
+
+@media (max-width: 720px) {
+  .dictionary-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dictionary-actions {
+    justify-content: flex-end;
+  }
 }
 
 .destructive-icon {
@@ -2236,6 +2219,82 @@ input:focus-visible,
   height: 26px;
   padding: 0 var(--sp-2);
   color: var(--muted-foreground);
+}
+
+.styles-section {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.style-options {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.style-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
+  align-items: center;
+  gap: var(--sp-5);
+  width: 100%;
+  padding: var(--sp-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--muted) 28%, transparent);
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out),
+    box-shadow var(--t-fast) var(--ease-out);
+}
+
+.style-option:hover {
+  background: color-mix(in oklch, var(--muted) 55%, transparent);
+}
+
+.style-option[data-selected="true"] {
+  border-color: color-mix(in oklch, var(--ring) 68%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring) 12%, transparent);
+}
+
+.style-option-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.style-option-title {
+  font-size: var(--fs-lg);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.style-option-description {
+  color: var(--muted-foreground);
+  font-size: var(--fs-md);
+  line-height: 1.45;
+}
+
+.style-option-sample {
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-family: var(--font-serif);
+  font-size: var(--fs-xl);
+  line-height: 1.35;
+}
+
+@media (max-width: 720px) {
+  .style-option {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: var(--sp-3);
+  }
+
+  .style-option-sample {
+    font-size: var(--fs-lg);
+  }
 }
 
 .permission-pill {

@@ -60,6 +60,7 @@ const DEFAULT_SETTINGS: DictationSettingsDto = {
     },
   },
   microphone: {},
+  style: "standard",
 };
 
 const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {

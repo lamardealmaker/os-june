@@ -95,10 +95,13 @@ export type DictationMicrophoneSetting = {
   name?: string;
 };
 
+export type DictationStyle = "standard" | "casualLowercase" | "formal";
+
 export type DictationSettingsDto = {
   pushToTalkShortcut: DictationShortcutSetting;
   toggleShortcut: DictationShortcutSetting;
   microphone: DictationMicrophoneSetting;
+  style: DictationStyle;
 };
 
 export type DictationSettingsResponse = {
@@ -522,6 +525,10 @@ export async function setDictationMicrophone(id?: string, name?: string) {
     id,
     name,
   });
+}
+
+export async function setDictationStyle(style: DictationStyle) {
+  return invoke<DictationSettingsDto>("set_dictation_style", { style });
 }
 
 export async function dictationHelperCommand(command: Record<string, unknown>) {
