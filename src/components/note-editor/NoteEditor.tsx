@@ -243,7 +243,7 @@ export function NoteEditor({
       </section>
 
       <div className="editor-footer">
-        {!recordingForNote && !processingLock && micDenied ? (
+        {micDenied && !recordingForNote ? (
           <section className="record-mic-blocked" role="alert">
             <p className="record-mic-blocked-message">
               <span className="record-mic-blocked-eyebrow">
@@ -251,7 +251,8 @@ export function NoteEditor({
                 Microphone access is blocked
               </span>
               <span className="record-mic-blocked-body">
-                Enable it in System Settings to record notes.
+                Enable it in System Settings to record audio. You can still
+                write notes here.
               </span>
             </p>
             <div className="record-mic-blocked-actions">
@@ -264,16 +265,15 @@ export function NoteEditor({
               </button>
             </div>
           </section>
-        ) : null}
+        ) : (
         <div
           className="record-shell"
           data-state={shellState}
-          data-mic-blocked={micDenied || undefined}
           data-options-open={
-            !recordingForNote && !processingLock && optionsOpen && !micDenied
+            !recordingForNote && !processingLock && optionsOpen
           }
         >
-          {!recordingForNote && !processingLock && !micDenied ? (
+          {!recordingForNote && !processingLock ? (
             <div
               className="record-options-panel"
               data-open={optionsOpen}
@@ -384,7 +384,6 @@ export function NoteEditor({
                       aria-label="Recording options"
                       aria-expanded={optionsOpen}
                       data-rotated={optionsOpen}
-                      disabled={micDenied}
                       onClick={() => setOptionsOpen((value) => !value)}
                     >
                       <IconChevronBottom size={16} />
@@ -395,6 +394,7 @@ export function NoteEditor({
             </AnimatePresence>
           </div>
         </div>
+        )}
       </div>
     </article>
   );
