@@ -38,10 +38,9 @@ const EXIT_TRANSITION_MS = 160;
 // Zero idle plus the CSS 3px base height makes silence read as a dot row.
 const IDLE_LEVEL = 0;
 
-// Single RMS samples arrive from the helper at ~25Hz. This is the middle
-// ground between the earlier centered crest and the too-jumpy history-only
-// pass: each bar still has its own shape, but it blends the newest level with
-// a nearby recent sample so the motion feels coherent.
+// Per-bar weight + history offset so each bar samples slightly different
+// recent audio. Blending newest level with a nearby recent sample keeps the
+// shape coherent without making every bar move identically.
 const BAR_WEIGHTS = [0.64, 0.86, 0.7, 0.84, 0.58];
 const BAR_HISTORY_OFFSETS = [1, 0, 1, 0, 1];
 const LEVEL_HISTORY_LENGTH = 8;
@@ -103,13 +102,10 @@ function setHud(state: string, status: string) {
       pushStopBoundsToNative();
     }
   } else if (previous === "listening") {
-    // Bars hide via CSS in non-listening states; let the rAF coast to idle
-    // and stop itself. Tell native to stop hit-testing the stop button.
     clearStopHover();
   }
-  // Pill width changes between states (listening 60px viz, transcribing 88px,
-  // silent-error hides viz entirely) — keep native click-through math in sync
-  // with the actual pill rect.
+  // Pill width varies by state, so refresh the cached pill rect for native
+  // click pass-through whenever the state changes.
   if (state !== previous && hud) {
     hud.offsetWidth;
     pushPillBoundsToNative();
@@ -199,16 +195,9 @@ function setStopHover(isHovered: boolean) {
   stopButton?.classList.toggle("is-hovered", isHovered);
 }
 
-// Hover detection + click pass-through both live in Rust. JS hands two rects
-// to native:
-//   1. The pill (`#hud`) rect — used to flip `set_ignore_cursor_events` so
-//      clicks in the transparent gutter around the pill fall through to apps
-//      underneath, while clicks on the pill itself still register.
-//   2. The stop button rect — used to hit-test cursor → `.is-hovered` class.
-// Both are pushed via invoke (one-shot), then the native thread polls and
-// emits `hud-stop-hover` events back. Doing this in Rust avoids WebKit's
-// timer/rAF throttling on the non-key panel, which is what made hover look
-// stuck until mouse-down.
+// Hover + click pass-through are computed in Rust against rects we push from
+// here. WebKit throttles JS timers on the non-key HUD panel, so any polling
+// done in JS only fires reliably during a mouse-down.
 function pushStopBoundsToNative() {
   if (!stopButton || hud?.dataset.state !== "listening") {
     void invoke("dictation_hud_set_stop_bounds", { rect: null }).catch(
@@ -263,8 +252,7 @@ async function hideHud() {
 async function showHud() {
   clearHideTimer();
   await appWindow.show();
-  // Force a layout flush so the rects we push to native reflect the
-  // just-applied state (pill width changes between listening/transcribing).
+  // Force a layout flush before reading rects.
   hud?.offsetWidth;
   pushPillBoundsToNative();
   pushStopBoundsToNative();
@@ -330,13 +318,10 @@ async function handleDictationEventPayload(payload: unknown) {
     if (isSilentDictationError(errorCode, errorMessage)) {
       setHud("silent-error", "Nothing recorded");
     } else {
-      // Detailed messages get logged elsewhere; the HUD just signals that
-      // something failed with the same shake + tinted pill treatment.
       setHud("error", "Error");
     }
     await showHud();
-    // Shake is ~380ms; hold ~1.6s after that so the message lingers long
-    // enough to read before the blur-fade exit.
+    // Hold long enough for the shake to finish and the message to read.
     hideSoon(1800);
   }
 }

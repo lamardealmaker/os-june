@@ -68,19 +68,9 @@ pub struct HudClientRect {
     bottom: f64,
 }
 
-/// Stop-button hover detection + transparent-gutter click pass-through, both
-/// driven entirely from the Rust side.
-///
-/// JS-side polling (rAF or setInterval) gets throttled by WebKit on pages
-/// that aren't the focused window, and the HUD is a non-activating panel that
-/// never becomes "key" — that's why hover only flickered to life on
-/// mouse-down. By moving the cursor read + hit test into a native thread and
-/// pushing the result to JS as a Tauri event, the visual update no longer
-/// depends on the WebView's wake state or JS timer cadence.
-///
-/// The same thread also flips `setIgnoresMouseEvents` so clicks in the
-/// transparent gutter around the pill fall through to whatever app is under
-/// the HUD, while clicks on the pill itself still register normally.
+/// Stop-button hover and pill-region click pass-through state. Polled by
+/// [`spawn_hud_hover_thread`]; we don't poll from JS because WebKit throttles
+/// timers on the non-key HUD panel.
 pub struct HudHoverState {
     stop_bounds: Mutex<Option<HudClientRect>>,
     pill_bounds: Mutex<Option<HudClientRect>>,
@@ -468,9 +458,6 @@ pub fn setup(app: &mut tauri::App) {
         stop_bounds: Mutex::new(None),
         pill_bounds: Mutex::new(None),
         last_hover: std::sync::atomic::AtomicBool::new(false),
-        // Start in pass-through state — the HUD isn't even visible yet, and
-        // we never want to block clicks until the cursor is genuinely on the
-        // pill.
         last_passthrough: std::sync::atomic::AtomicBool::new(true),
     });
     spawn_hud_hover_thread(app.handle().clone());
@@ -620,17 +607,10 @@ pub fn latest_dictation_event(state: State<'_, LastDictationEvent>) -> Option<St
     state.event.lock().ok().and_then(|event| event.clone())
 }
 
-/// CoreGraphics-backed cursor query. Returns position in logical points with
-/// top-left origin.
-///
-/// We can't use `WebviewWindow::cursor_position()` here: on macOS that path
-/// only refreshes the cached cursor when the window is "key", and our HUD is
-/// a non-activating NSPanel that never becomes key without a click. That's
-/// why hover only updates on mouse-down — the cached cursor only moves when
-/// AppKit happens to re-deliver an event during a click.
-///
-/// CGEvent has no such dependency: it pulls the current cursor from the
-/// window server directly.
+/// Cursor position in logical points (top-left origin) read directly from
+/// the window server. `WebviewWindow::cursor_position()` is not used here
+/// because on macOS it only refreshes while the window is key, and the HUD
+/// is a non-activating NSPanel.
 #[cfg(target_os = "macos")]
 fn cursor_position_via_cg() -> Option<(f64, f64)> {
     #[repr(C)]
@@ -659,9 +639,6 @@ fn cursor_position_via_cg() -> Option<(f64, f64)> {
     }
 }
 
-/// Bounds setter for the stop button (used for hover hit-test).
-/// JS calls this with the rect on entering `listening`, and with `None` when
-/// leaving listening.
 #[tauri::command]
 pub fn dictation_hud_set_stop_bounds(state: State<'_, HudHoverState>, rect: Option<HudClientRect>) {
     if let Ok(mut guard) = state.stop_bounds.lock() {
@@ -669,9 +646,6 @@ pub fn dictation_hud_set_stop_bounds(state: State<'_, HudHoverState>, rect: Opti
     }
 }
 
-/// Bounds setter for the pill itself (used to decide click pass-through on
-/// the transparent gutter). JS calls this on show with the `.hud` element's
-/// rect, and with `None` on hide.
 #[tauri::command]
 pub fn dictation_hud_set_pill_bounds(state: State<'_, HudHoverState>, rect: Option<HudClientRect>) {
     if let Ok(mut guard) = state.pill_bounds.lock() {
@@ -693,10 +667,8 @@ fn rect_contains(
     cx >= left && cx <= right && cy >= top && cy <= bottom
 }
 
-/// Native polling thread for stop-button hover and pill-region click
-/// pass-through. Runs continuously; cheap to keep alive because it
-/// short-circuits when bounds are `None`. Only emits events / flips
-/// pass-through when state actually changes.
+/// Polls the cursor against the cached pill/stop bounds and emits hover +
+/// pass-through state changes. Short-circuits when bounds are `None`.
 fn spawn_hud_hover_thread(app: AppHandle) {
     thread::spawn(move || {
         use std::sync::atomic::Ordering;
@@ -717,15 +689,12 @@ fn spawn_hud_hover_thread(app: AppHandle) {
             let stop_rect = hover_state.stop_bounds.lock().ok().and_then(|g| g.clone());
             let pill_rect = hover_state.pill_bounds.lock().ok().and_then(|g| g.clone());
 
-            // When the HUD isn't visible (or hasn't reported bounds yet),
-            // clear stale hover and leave the window non-interactive — there's
-            // nothing to click anyway.
+            // Hidden or no known bounds: drop any stale hover, force
+            // pass-through so we never block clicks underneath.
             if !visible || pill_rect.is_none() {
                 if hover_state.last_hover.swap(false, Ordering::Relaxed) {
                     let _ = app.emit("hud-stop-hover", false);
                 }
-                // Default to pass-through when hidden so we never block clicks
-                // to whatever is underneath.
                 if !hover_state.last_passthrough.swap(true, Ordering::Relaxed) {
                     let _ = hud.set_ignore_cursor_events(true);
                 }
@@ -745,11 +714,8 @@ fn spawn_hud_hover_thread(app: AppHandle) {
 
             let Some((cx, cy)) = cursor else { continue };
 
-            // Click pass-through: only let the HUD capture mouse events when
-            // the cursor is actually over the pill. Outside the pill (in the
-            // transparent gutter around it), forward clicks to the window
-            // underneath so the user can keep selecting in other apps while
-            // dictating.
+            // Pass clicks through to the app underneath whenever the cursor
+            // isn't directly over the pill.
             if let Some(pill) = pill_rect.as_ref() {
                 let over_pill = rect_contains(pill, position, scale_factor, cx, cy);
                 let should_passthrough = !over_pill;
@@ -762,9 +728,6 @@ fn spawn_hud_hover_thread(app: AppHandle) {
                 }
             }
 
-            // Stop-button hover (only meaningful in `listening`; JS clears the
-            // stop bounds otherwise so this branch falls through to a forced
-            // hover-off below).
             let is_hovered = match stop_rect.as_ref() {
                 Some(rect) => rect_contains(rect, position, scale_factor, cx, cy),
                 None => false,
@@ -1771,19 +1734,8 @@ fn make_hud_nonactivating(hud: &WebviewWindow) {
         let current_mask: usize = msg_send![window, styleMask];
         let _: () = msg_send![window, setStyleMask: current_mask | NON_ACTIVATING];
 
-        // Hover-event plumbing for a non-key panel.
-        //
-        // AppKit only dispatches `mouseMoved:` (which WKWebView uses to update
-        // CSS :hover and JS mousemove) while the window is key AND
-        // acceptsMouseMovedEvents is YES. Since `focusable: false` means the
-        // panel never becomes key, hover would otherwise only update when the
-        // cursor *enters* a tracking area — that's the "hover feels dead"
-        // lag the user kept hitting.
-        //
-        // becomesKeyOnlyIfNeeded:YES is the NSPanel-only escape hatch: the
-        // panel still doesn't activate the app, but events get routed through
-        // the view hierarchy as if it were key, so mouseMoved reaches the
-        // WKWebView.
+        // Allow mouseMoved + brief key acquisition without activating the
+        // app, so native drag and any AppKit-routed mouse events still work.
         let _: () = msg_send![window, setAcceptsMouseMovedEvents: true];
         let _: () = msg_send![window, setBecomesKeyOnlyIfNeeded: true];
     }

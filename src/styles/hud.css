@@ -51,9 +51,6 @@ body {
   --hud-bar: var(--foreground);
   --hud-handle: color-mix(in oklch, var(--foreground) 58%, transparent);
   --hud-stop-bg: color-mix(in oklch, var(--foreground) 5%, transparent);
-  /* Hover surface uses --accent (the same raised-gray token the sidebar and
-   * other controls use for hover) so the HUD reads as part of the same app
-   * vocabulary instead of a bespoke white wash. */
   --hud-stop-bg-hover: var(--accent);
   --hud-danger: var(--destructive);
   --hud-warning: var(--warm-strong);
@@ -63,11 +60,8 @@ body {
   align-items: center;
   gap: var(--sp-1);
   height: 32px;
-  /* 3px inset (+ 1px border) lets inner controls sit at 6px radius perfectly
-   * concentric with the HUD's 10px outer radius. The previous 4px inset was
-   * mathematically concentric too, but with the stop button's tiny inner
-   * glyph the curved corner reads as extra right padding — the tighter
-   * inset closes that optical gap on both sides at once. */
+  /* 3px inset + 1px border = 4px; inner controls at 6px radius sit
+   * concentric inside the 10px outer radius. */
   padding: 3px;
   border: 1px solid var(--hud-border);
   border-radius: var(--r-lg);
@@ -103,8 +97,6 @@ body {
   place-items: center;
   width: 24px;
   height: 24px;
-  /* Concentric with the HUD: outer radius 10px minus 1px border minus 3px
-   * padding leaves 6px for the inner control curve. */
   border-radius: 6px;
   color: var(--hud-handle);
   cursor: grab;
@@ -253,13 +245,9 @@ body {
   pointer-events: none;
 }
 
-/* Hover state is driven exclusively by the Rust-side native cursor hit test
- * (see hud.ts → "hud-stop-hover" event listener). We deliberately do NOT
- * include `:hover` here: on macOS, WebKit's `:hover` matching can latch onto
- * the button while the panel is briefly key (during a click) and stick after
- * the panel resigns key, which read as the stop button auto-highlighting on
- * the next dictation. The `.is-hovered` class is set/cleared every poll, so
- * we know exactly when it should be on. */
+/* Hover is driven by the native polling thread via the `.is-hovered` class.
+ * No `:hover` selector — WebKit can latch :hover state when the panel is
+ * briefly key and not release it, which manifests as auto-highlighting. */
 .hud-stop.is-hovered::before {
   opacity: 1;
 }
@@ -309,9 +297,8 @@ body {
   display: none;
 }
 
-/* Both error states share the same text-only, shaking pill shape — the only
- * difference is the tint (warm for "Nothing recorded", red for hard errors).
- * Subtle "not allowed" wobble fires once when the state lands. */
+/* Text-only shaking pill shared by both error states. Tint differs:
+ * warm for "Nothing recorded", red for hard errors. */
 .hud[data-state="silent-error"],
 .hud[data-state="error"] {
   gap: var(--sp-2);
@@ -321,8 +308,6 @@ body {
 
 .hud[data-state="silent-error"] {
   --hud-alert: var(--hud-warning);
-  /* Border kept close to the surface tint so it reads as one cohesive warm
-   * pill, not a tinted body inside an orange ring. */
   border-color: color-mix(in oklch, var(--hud-warning) 28%, var(--border));
   background: color-mix(in oklch, var(--popover) 78%, var(--hud-warning) 22%);
 }
