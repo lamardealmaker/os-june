@@ -38,6 +38,9 @@ importers:
       react-dom:
         specifier: ^18.3.1
         version: 18.3.1(react@18.3.1)
+      unicode-animations:
+        specifier: ^1.0.3
+        version: 1.0.3
     devDependencies:
       '@tauri-apps/cli':
         specifier: ^2.9.0
@@ -1500,6 +1503,10 @@ packages:
   typescript@5.9.3:
     resolution: {integrity: sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==}
     engines: {node: '>=14.17'}
+    hasBin: true
+
+  unicode-animations@1.0.3:
+    resolution: {integrity: sha512-+klB2oWwcYZjYWhwP4Pr8UZffWDFVx6jKeIahE6z0QYyM2dwDeDPyn5nevCYbyotxvtT9lh21cVURO1RX0+YMg==}
     hasBin: true
 
   update-browserslist-db@1.2.3:
@@ -2978,6 +2985,8 @@ snapshots:
   tslib@2.8.1: {}
 
   typescript@5.9.3: {}
+
+  unicode-animations@1.0.3: {}
 
   update-browserslist-db@1.2.3(browserslist@4.28.2):
     dependencies:

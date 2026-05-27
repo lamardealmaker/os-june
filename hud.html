@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,20 +7,47 @@
   </head>
   <body>
     <div id="hud" class="hud" data-state="idle">
-      <div class="hud-bars" aria-hidden="true">
-        <span class="hud-bar"></span>
-        <span class="hud-bar"></span>
-        <span class="hud-bar"></span>
-        <span class="hud-bar"></span>
-        <span class="hud-bar"></span>
-        <span class="hud-bar"></span>
-        <span class="hud-bar"></span>
+      <span id="hud-handle" class="hud-handle" aria-label="Drag dictation HUD">
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <circle cx="9" cy="5" r="2" />
+          <circle cx="15" cy="5" r="2" />
+          <circle cx="9" cy="12" r="2" />
+          <circle cx="15" cy="12" r="2" />
+          <circle cx="9" cy="19" r="2" />
+          <circle cx="15" cy="19" r="2" />
+        </svg>
+      </span>
+      <div class="hud-viz">
+        <div class="hud-bars" aria-hidden="true">
+          <span class="hud-bar"></span>
+          <span class="hud-bar"></span>
+          <span class="hud-bar"></span>
+          <span class="hud-bar"></span>
+          <span class="hud-bar"></span>
+        </div>
+        <span id="hud-braille" class="hud-braille" aria-hidden="true"></span>
+        <span class="hud-error-mark" aria-hidden="true"></span>
       </div>
-      <span class="hud-progress" aria-hidden="true"></span>
-      <span class="hud-success" aria-hidden="true"></span>
-      <span class="hud-error-mark" aria-hidden="true"></span>
+      <span
+        id="hud-error-text"
+        class="hud-error-text"
+        aria-hidden="true"
+      ></span>
+      <button
+        id="hud-stop"
+        class="hud-stop"
+        type="button"
+        aria-label="Stop dictation"
+      >
+        <span class="hud-stop-glyph" aria-hidden="true"></span>
+      </button>
       <span id="hud-status" class="hud-status">Idle</span>
-      <p id="hud-transcript" class="hud-message"></p>
     </div>
     <script type="module" src="/src/hud.ts"></script>
   </body>

@@ -1329,7 +1329,9 @@ final class DictationController {
 
     private func startMetering() {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(100))
+        // 25Hz audio-level emit rate: keeps the HUD's bars feeling reactive
+        // to voice without flooding the IPC channel.
+        timer.schedule(deadline: .now(), repeating: .milliseconds(40))
         timer.setEventHandler { [weak self] in
             self?.emitAudioRecorderLevel()
         }
