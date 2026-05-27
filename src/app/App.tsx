@@ -91,12 +91,7 @@ export function App() {
     void recoverRecording(sessionId, action)
       .then((note) => {
         dispatch({ type: "noteUpdated", note });
-        dispatch({
-          type: "recoveriesUpdated",
-          recoveries: state.activeRecoveries.filter(
-            (recovery) => recovery.sessionId !== sessionId,
-          ),
-        });
+        dispatch({ type: "recoveryRemoved", sessionId });
       })
       .catch((err: unknown) => setError(messageFromError(err)));
   }
