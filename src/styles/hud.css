@@ -410,7 +410,8 @@ body {
     transition: none;
   }
 
-  .hud[data-state="silent-error"] {
+  .hud[data-state="silent-error"],
+  .hud[data-state="error"] {
     animation: none;
   }
 }

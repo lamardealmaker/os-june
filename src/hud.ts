@@ -310,12 +310,9 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "error") {
-    const errorCode =
-      typeof dictationEvent.payload?.code === "string"
-        ? dictationEvent.payload.code
-        : "";
-    const errorMessage = dictationEvent.payload?.message || "";
-    if (isSilentDictationError(errorCode, errorMessage)) {
+    // Rust pre-classifies via payload.silent so the HUD has one source of
+    // truth for what counts as a "Nothing recorded" case.
+    if (dictationEvent.payload?.silent === true) {
       setHud("silent-error", "Nothing recorded");
     } else {
       setHud("error", "Error");
@@ -324,25 +321,6 @@ async function handleDictationEventPayload(payload: unknown) {
     // Hold long enough for the shake to finish and the message to read.
     hideSoon(1800);
   }
-}
-
-function isSilentDictationError(code: string, message: string) {
-  const normalizedMessage = message.toLowerCase();
-  return (
-    [
-      "missing_recording",
-      "no_speech",
-      "no_transcription",
-      "empty_transcript",
-      "transcription_empty",
-    ].includes(code) ||
-    normalizedMessage.includes("empty transcript") ||
-    normalizedMessage.includes("no transcript") ||
-    normalizedMessage.includes("no speech") ||
-    normalizedMessage.includes("no recorded audio") ||
-    normalizedMessage.includes("audio file is too short") ||
-    normalizedMessage.includes("did not return any transcript")
-  );
 }
 
 function parseEvent(payload: unknown): DictationHudEvent | undefined {

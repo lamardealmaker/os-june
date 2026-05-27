@@ -1134,9 +1134,15 @@ fn handle_helper_event_line(app: &AppHandle, line: String) {
         }
     }
 
-    update_latest_event(app, event_type, Some(line.clone()));
-    update_hud_window(app, event_type, event.as_ref());
-    let _ = app.emit("dictation-event", line);
+    // Route through emit_dictation_event_value so error events get the
+    // `payload.silent` annotation from a single classification site.
+    if let Some(event) = event {
+        emit_dictation_event_value(app, event);
+    } else {
+        update_latest_event(app, event_type, Some(line.clone()));
+        update_hud_window(app, event_type, None);
+        let _ = app.emit("dictation-event", line);
+    }
 }
 
 async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
@@ -1459,12 +1465,28 @@ fn app_error_event(error: AppError) -> serde_json::Value {
     })
 }
 
-fn emit_dictation_event_value(app: &AppHandle, event: serde_json::Value) {
+fn emit_dictation_event_value(app: &AppHandle, mut event: serde_json::Value) {
+    annotate_silent_error(&mut event);
     let event_type = event.get("type").and_then(serde_json::Value::as_str);
     let line = event.to_string();
     update_latest_event(app, event_type, Some(line.clone()));
     update_hud_window(app, event_type, Some(&event));
     let _ = app.emit("dictation-event", line);
+}
+
+/// Tag error events with `payload.silent: bool` so the HUD doesn't have to
+/// re-derive the classification — Rust is the single source of truth.
+fn annotate_silent_error(event: &mut serde_json::Value) {
+    if event.get("type").and_then(serde_json::Value::as_str) != Some("error") {
+        return;
+    }
+    let silent = is_silent_transcription_error(event);
+    if let Some(payload) = event
+        .get_mut("payload")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        payload.insert("silent".to_string(), serde_json::Value::Bool(silent));
+    }
 }
 
 fn update_hud_window(app: &AppHandle, event_type: Option<&str>, event: Option<&serde_json::Value>) {
