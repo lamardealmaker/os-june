@@ -17,7 +17,9 @@ use std::{
     thread,
     time::Duration,
 };
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, State};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow, WindowEvent,
+};
 
 const DICTATION_TRANSCRIPTION_CONTEXT: &str = "Transcribe this as clean hands-free dictation for direct insertion into the active app. Preserve the speaker's intended words, language, and meaning. Remove filler sounds and accidental false starts when they are not meaningful, especially um, uh, ah, er, and a... stutters. Do not remove intentional articles such as a or an when they are grammatically needed. Convert spoken punctuation and formatting into text punctuation, including comma, period, question mark, exclamation point, colon, semicolon, dash, newline, and new paragraph. Convert quote/unquote, open quote/close quote, and start quote/end quote into actual quotation marks around the quoted words. Output only the dictated text.";
 const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
@@ -46,8 +48,24 @@ pub struct HotkeyStatus {
     event: Mutex<serde_json::Value>,
 }
 
+/// Position the HUD remembers between dictation sessions in the same process.
+/// Intentionally process-scoped, not disk-persisted: every fresh launch of
+/// Scribe should put the pill back at bottom-center, but within a single run
+/// the user's drag-to-corner choice should stick.
+pub struct HudPosition {
+    inner: Mutex<Option<(i32, i32)>>,
+}
+
 pub struct ShortcutActivationState {
     controller: Mutex<ShortcutActivationController>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HudClientRect {
+    left: f64,
+    right: f64,
+    top: f64,
+    bottom: f64,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -423,6 +441,9 @@ fn no_standard_modifiers(modifiers: &DictationShortcutModifiers) -> bool {
 }
 
 pub fn setup(app: &mut tauri::App) {
+    app.manage(HudPosition {
+        inner: Mutex::new(None),
+    });
     if let Err(error) = configure_hud_window(app.handle()) {
         eprintln!("failed to configure dictation HUD: {error}");
     }
@@ -567,6 +588,33 @@ pub fn dictation_hotkey_status(state: State<'_, HotkeyStatus>) -> serde_json::Va
 #[tauri::command]
 pub fn latest_dictation_event(state: State<'_, LastDictationEvent>) -> Option<String> {
     state.event.lock().ok().and_then(|event| event.clone())
+}
+
+#[tauri::command]
+pub fn dictation_hud_hit_test(app: AppHandle, rect: HudClientRect) -> Result<bool, AppError> {
+    let Some(hud) = app.get_webview_window("hud") else {
+        return Ok(false);
+    };
+    if !hud.is_visible().unwrap_or(false) {
+        return Ok(false);
+    }
+
+    let cursor = hud
+        .cursor_position()
+        .map_err(|error| AppError::new("hud_cursor_position_failed", error.to_string()))?;
+    let position = hud
+        .outer_position()
+        .map_err(|error| AppError::new("hud_position_failed", error.to_string()))?;
+    let scale_factor = hud
+        .scale_factor()
+        .map_err(|error| AppError::new("hud_scale_factor_failed", error.to_string()))?;
+
+    let left = position.x as f64 + rect.left * scale_factor;
+    let right = position.x as f64 + rect.right * scale_factor;
+    let top = position.y as f64 + rect.top * scale_factor;
+    let bottom = position.y as f64 + rect.bottom * scale_factor;
+
+    Ok(cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom)
 }
 
 pub fn stop_helper(app: &AppHandle) {
@@ -1368,14 +1416,33 @@ fn is_silent_transcription_error(event: &serde_json::Value) -> bool {
         .and_then(|payload| payload.get("message"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
+    let normalized_message = message.to_ascii_lowercase();
 
-    matches!(code, "no_speech" | "no_transcription" | "empty_transcript")
-        || message == "OpenAI did not return any transcript text."
+    matches!(
+        code,
+        "missing_recording"
+            | "no_speech"
+            | "no_transcription"
+            | "empty_transcript"
+            | "transcription_empty"
+    ) || normalized_message.contains("empty transcript")
+        || normalized_message.contains("no transcript")
+        || normalized_message.contains("no speech")
+        || normalized_message.contains("no recorded audio")
+        || normalized_message.contains("audio file is too short")
+        || normalized_message.contains("did not return any transcript")
 }
 
 fn show_hud_window(app: &AppHandle) {
     if let Some(hud) = app.get_webview_window("hud") {
-        position_hud_window(&hud);
+        // Only reposition when the HUD is coming up fresh. Within an active
+        // session the user may have dragged the pill to a spot they like;
+        // mid-session state changes (audio level, transcribing, pasting)
+        // shouldn't yank it back to the default.
+        let was_hidden = !hud.is_visible().unwrap_or(false);
+        if was_hidden {
+            position_hud_window(app, &hud);
+        }
         let _ = hud.show();
     }
 }
@@ -1405,31 +1472,82 @@ fn schedule_hud_hide(app: &AppHandle, delay: Duration) {
     });
 }
 
-fn position_hud_window(hud: &tauri::WebviewWindow) {
+fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
+    let Ok(window_size) = hud.outer_size() else {
+        return;
+    };
+
+    // Restore the in-memory drag position if it's still on-screen. This
+    // doesn't persist across app restarts — that's deliberate; quitting
+    // Scribe resets the HUD to bottom-center so it can't end up lost on a
+    // monitor that's no longer connected.
+    if let Some(state) = app.try_state::<HudPosition>() {
+        let saved = state.inner.lock().ok().and_then(|guard| *guard);
+        if let Some((x, y)) = saved {
+            if hud_position_is_visible(hud, x, y, window_size) {
+                let _ = hud.set_position(PhysicalPosition::new(x, y));
+                return;
+            }
+        }
+    }
+
+    if let Some((x, y)) = default_hud_position(hud, window_size) {
+        let _ = hud.set_position(PhysicalPosition::new(x, y));
+    }
+}
+
+fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Option<(i32, i32)> {
     const HUD_BOTTOM_MARGIN: i32 = 12;
+    // The pill is much smaller than the window — the window is intentionally
+    // padded with transparent space so the box-shadow has room to fall off
+    // softly. We anchor the *pill* at bottom-center, not the window, which
+    // means accounting for the gap below the pill (half the window's slack).
+    const PILL_HEIGHT: i32 = 30;
 
     let monitor = hud
         .cursor_position()
         .ok()
         .and_then(|cursor| hud.monitor_from_point(cursor.x, cursor.y).ok().flatten())
         .or_else(|| hud.current_monitor().ok().flatten())
-        .or_else(|| hud.primary_monitor().ok().flatten());
-
-    let Some(monitor) = monitor else {
-        return;
-    };
-    let Ok(window_size) = hud.outer_size() else {
-        return;
-    };
+        .or_else(|| hud.primary_monitor().ok().flatten())?;
 
     let work_area = monitor.work_area();
-    let x = work_area.position.x
-        + ((work_area.size.width as i32).saturating_sub(window_size.width as i32) / 2);
-    let y = work_area.position.y + work_area.size.height as i32
-        - window_size.height as i32
-        - HUD_BOTTOM_MARGIN;
+    let work_bottom = work_area.position.y + work_area.size.height as i32;
+    let work_center_x = work_area.position.x + work_area.size.width as i32 / 2;
 
-    let _ = hud.set_position(PhysicalPosition::new(x, y));
+    // The pill is centered inside the window (CSS `place-items: center` on
+    // body), so window_top = pill_center - window_height/2.
+    let pill_center_y = work_bottom - HUD_BOTTOM_MARGIN - PILL_HEIGHT / 2;
+    let x = work_center_x - window_size.width as i32 / 2;
+    let y = pill_center_y - window_size.height as i32 / 2;
+    Some((x, y))
+}
+
+/// Treat a saved position as still usable as long as the pill overlaps a
+/// connected monitor by at least this many pixels on each axis. Guards
+/// against "I unplugged the external display" losing the HUD off-screen.
+fn hud_position_is_visible(
+    hud: &WebviewWindow,
+    x: i32,
+    y: i32,
+    window_size: PhysicalSize<u32>,
+) -> bool {
+    const MIN_OVERLAP_PX: i32 = 24;
+    let Ok(monitors) = hud.available_monitors() else {
+        return false;
+    };
+    let pill_w = window_size.width as i32;
+    let pill_h = window_size.height as i32;
+    monitors.iter().any(|monitor| {
+        let work = monitor.work_area();
+        let mx = work.position.x;
+        let my = work.position.y;
+        let mw = work.size.width as i32;
+        let mh = work.size.height as i32;
+        let overlap_x = (x + pill_w).min(mx + mw) - x.max(mx);
+        let overlap_y = (y + pill_h).min(my + mh) - y.max(my);
+        overlap_x >= MIN_OVERLAP_PX && overlap_y >= MIN_OVERLAP_PX
+    })
 }
 
 fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
@@ -1443,8 +1561,71 @@ fn configure_hud_window(app: &AppHandle) -> Result<(), String> {
         hud.set_skip_taskbar(true)
             .map_err(|error| error.to_string())?;
         hud.set_shadow(false).map_err(|error| error.to_string())?;
+
+        #[cfg(target_os = "macos")]
+        make_hud_nonactivating(&hud);
+
+        let app_for_events = app.clone();
+        hud.on_window_event(move |event| {
+            if let WindowEvent::Moved(position) = event {
+                if let Some(state) = app_for_events.try_state::<HudPosition>() {
+                    if let Ok(mut guard) = state.inner.lock() {
+                        *guard = Some((position.x, position.y));
+                    }
+                }
+            }
+        });
     }
     Ok(())
+}
+
+/// macOS: reclass the HUD's NSWindow to NSPanel and set the
+/// `NSWindowStyleMaskNonactivatingPanel` style bit, so clicking the drag
+/// handle or stop button doesn't steal focus from whichever app the user is
+/// dictating into. Without this, every interaction with the HUD activates
+/// OS Scribe and yanks the text cursor out of the user's document.
+#[cfg(target_os = "macos")]
+fn make_hud_nonactivating(hud: &WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject};
+
+    let Ok(handle) = hud.ns_window() else {
+        return;
+    };
+    if handle.is_null() {
+        return;
+    }
+    let Some(panel_class) = AnyClass::get(c"NSPanel") else {
+        return;
+    };
+
+    unsafe {
+        let window = handle as *mut AnyObject;
+        // NSWindow → NSPanel; required because the non-activating style mask
+        // is only honored on NSPanel instances.
+        objc2::ffi::object_setClass(window, panel_class as *const _ as *const _);
+
+        // NSWindowStyleMaskNonactivatingPanel = 1 << 7.
+        const NON_ACTIVATING: usize = 1 << 7;
+        let current_mask: usize = msg_send![window, styleMask];
+        let _: () = msg_send![window, setStyleMask: current_mask | NON_ACTIVATING];
+
+        // Hover-event plumbing for a non-key panel.
+        //
+        // AppKit only dispatches `mouseMoved:` (which WKWebView uses to update
+        // CSS :hover and JS mousemove) while the window is key AND
+        // acceptsMouseMovedEvents is YES. Since `focusable: false` means the
+        // panel never becomes key, hover would otherwise only update when the
+        // cursor *enters* a tracking area — that's the "hover feels dead"
+        // lag the user kept hitting.
+        //
+        // becomesKeyOnlyIfNeeded:YES is the NSPanel-only escape hatch: the
+        // panel still doesn't activate the app, but events get routed through
+        // the view hierarchy as if it were key, so mouseMoved reaches the
+        // WKWebView.
+        let _: () = msg_send![window, setAcceptsMouseMovedEvents: true];
+        let _: () = msg_send![window, setBecomesKeyOnlyIfNeeded: true];
+    }
 }
 
 fn hotkey_ready_event(settings: &DictationSettings) -> serde_json::Value {
@@ -1919,5 +2100,18 @@ mod tests {
             "Here is the normalized transcript: Hello."
         ));
         assert!(!looks_like_instruction_response("Hello, \"testing\"."));
+    }
+
+    #[test]
+    fn treats_empty_provider_transcript_as_silent_error() {
+        let event = serde_json::json!({
+            "type": "error",
+            "payload": {
+                "code": "transcription_empty",
+                "message": "OpenAI did not return any transcript text."
+            }
+        });
+
+        assert!(is_silent_transcription_error(&event));
     }
 }

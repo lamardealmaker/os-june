@@ -1,6 +1,23 @@
 @import "./tokens.css";
 
+/*
+ * Dictation HUD.
+ *
+ * Forced dark regardless of system theme — the HUD is a transient overlay
+ * that needs to read consistently against any wallpaper or app behind it.
+ * Layout: [drag handle] [audio viz] [stop button], inside a blurred pill.
+ */
+
 :root {
+  /* Force dark surface tokens for the HUD, ignoring prefers-color-scheme. */
+  --background: oklch(0.165 0.0015 84.59);
+  --foreground: oklch(0.985 0.0015 84.59);
+  --popover: oklch(0.195 0.0015 84.59);
+  --muted: oklch(0.268 0.0015 84.59);
+  --muted-foreground: oklch(0.709 0.0015 84.59);
+  --border: oklch(1 0 0 / 12%);
+  --destructive: oklch(0.704 0.191 22.216);
+
   color: var(--foreground);
   background: transparent;
   font-family: var(--font-sans);
@@ -8,6 +25,7 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  color-scheme: dark;
 }
 
 * {
@@ -22,112 +40,162 @@ body {
   margin: 0;
   overflow: hidden;
   background: transparent;
+  /* Only the pill itself is interactive; transparent gutter is click-through. */
   pointer-events: none;
   user-select: none;
 }
 
 .hud {
-  --hud-bg: color-mix(in oklch, var(--popover) 92%, transparent);
-  --hud-border: color-mix(in oklch, var(--border) 80%, transparent);
+  --hud-bg: color-mix(in oklch, var(--popover) 82%, transparent);
+  --hud-border: var(--border);
   --hud-bar: var(--foreground);
-  --hud-bar-soft: var(--muted-foreground);
+  --hud-handle: color-mix(in oklch, var(--foreground) 58%, transparent);
+  --hud-stop-bg: color-mix(in oklch, var(--foreground) 10%, transparent);
+  --hud-stop-bg-hover: color-mix(in oklch, var(--foreground) 12%, transparent);
   --hud-danger: var(--destructive);
+  --hud-warning: var(--warm-strong);
+  --hud-alert: var(--hud-danger);
 
-  display: grid;
-  place-items: center;
-  width: 88px;
-  height: 28px;
-  padding: 5px 8px;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 32px;
+  padding: var(--sp-1);
   border: 1px solid var(--hud-border);
-  border-radius: 999px;
+  border-radius: var(--r-lg);
   background: var(--hud-bg);
   color: var(--foreground);
-  box-shadow: var(--shadow-md);
-  backdrop-filter: blur(9px) saturate(1.2);
+  /* Custom shadow tuned for a dark pill floating over arbitrary content —
+   * shadow-md is too light to read against bright wallpapers. */
+  box-shadow:
+    0 10px 28px oklch(0% 0 none / 38%),
+    0 2px 6px oklch(0% 0 none / 26%),
+    0 0 0 0.5px oklch(0% 0 none / 28%);
+  backdrop-filter: blur(14px) saturate(1.4);
+  pointer-events: auto;
+  transition:
+    opacity 120ms var(--ease-out),
+    transform 160ms var(--ease-out),
+    filter 140ms var(--ease-out);
+}
+
+/* Push the drag handle hard left so the audio viz + stop button cluster
+ * sits flush on the right, with the bars centered in their own share of
+ * the panel rather than the geometric middle of the whole pill. */
+.hud > .hud-handle {
+  margin-right: auto;
+}
+
+/* Drag handle. Drag starts from hud.ts with startDragging(); the explicit
+ * pointer path is more reliable than data-tauri-drag-region on the
+ * non-activating macOS panel. */
+.hud-handle {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--r-sm);
+  color: var(--hud-handle);
+  cursor: grab;
+  overflow: hidden;
+  contain: paint;
+}
+
+.hud-handle:active {
+  cursor: grabbing;
+}
+
+.hud-handle svg {
+  position: relative;
+  z-index: 1;
+  display: block;
+  pointer-events: none;
+}
+
+.hud-handle:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
+  outline-offset: 1px;
+}
+
+/* Audio visualisation -------------------------------------------------- */
+.hud-viz {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 24px;
+  /* Limit repaint scope so 25Hz audio updates don't compete with hover
+   * paints on neighbouring controls. */
+  contain: layout paint;
 }
 
 .hud-bars {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 68px;
-  height: 17px;
-  gap: 3.5px;
+  gap: 3px;
+  height: 22px;
 }
 
+/* The bar boxes stay a fixed size; only their absolutely-positioned inner
+ * fills change height. That keeps the waveform fully rounded without forcing
+ * flex layout work on every audio-level event. */
 .hud-bar {
-  width: 3.5px;
-  min-height: 4px;
-  height: calc(4px + (var(--level, 0.2) * 13px));
-  border-radius: 999px;
-  background: linear-gradient(
-    180deg,
-    color-mix(in oklch, var(--hud-bar) 96%, transparent),
-    color-mix(in oklch, var(--hud-bar-soft) 86%, transparent)
-  );
-  box-shadow: 0 0 8px color-mix(in oklch, var(--foreground) 12%, transparent);
-  transition:
-    height 90ms ease-out,
-    opacity 140ms ease-out,
-    transform 140ms ease-out;
-}
-
-.hud-progress,
-.hud-success,
-.hud-error-mark,
-.hud-message {
-  display: none;
-}
-
-.hud-progress {
-  width: 17px;
-  height: 17px;
-  border: 1.5px solid color-mix(in oklch, var(--border) 72%, transparent);
-  border-top-color: var(--foreground);
-  border-radius: 999px;
-  animation: hud-spin 820ms linear infinite;
-}
-
-.hud-success {
   position: relative;
-  width: 17px;
-  height: 17px;
-  border: 1px solid color-mix(in oklch, var(--foreground) 76%, transparent);
-  border-radius: 999px;
-  box-shadow: 0 0 10px color-mix(in oklch, var(--foreground) 10%, transparent);
+  width: 3px;
+  height: 22px;
 }
 
-.hud-success::after {
+.hud-bar::before {
   content: "";
   position: absolute;
-  top: 3.5px;
-  left: 5px;
-  width: 4.5px;
-  height: 7.5px;
-  border: solid var(--foreground);
-  border-width: 0 1.5px 1.5px 0;
-  transform: rotate(45deg);
+  left: 0;
+  bottom: 50%;
+  width: 100%;
+  height: calc(3px + var(--level, 0) * 19px);
+  border-radius: 999px;
+  background: var(--hud-bar);
+  transform: translateY(50%);
+  transition: height 80ms ease-out;
+}
+
+.hud-braille,
+.hud-error-mark {
+  position: absolute;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.hud-braille {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 1px;
+  color: var(--foreground);
+  transform: translateY(-1px);
 }
 
 .hud-error-mark {
-  position: relative;
-  width: 17px;
-  height: 17px;
-  border: 1px solid color-mix(in oklch, var(--hud-danger) 78%, transparent);
+  width: 16px;
+  height: 16px;
+  border: 1px solid color-mix(in oklch, var(--hud-alert) 70%, transparent);
   border-radius: 999px;
-  box-shadow: 0 0 10px color-mix(in oklch, var(--hud-danger) 14%, transparent);
 }
 
 .hud-error-mark::before,
 .hud-error-mark::after {
   content: "";
   position: absolute;
-  top: 7.5px;
-  left: 4.5px;
+  top: 7px;
+  left: 4px;
   width: 7px;
   height: 1.5px;
   border-radius: 999px;
-  background: var(--hud-danger);
+  background: var(--hud-alert);
 }
 
 .hud-error-mark::before {
@@ -138,6 +206,75 @@ body {
   transform: rotate(-45deg);
 }
 
+.hud-error-text {
+  display: none;
+  color: color-mix(in oklch, var(--foreground) 92%, var(--hud-alert));
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  transform: translateY(-0.5px);
+}
+
+/* Stop button ---------------------------------------------------------- */
+.hud-stop {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--hud-stop-bg);
+  color: var(--foreground);
+  cursor: pointer;
+  overflow: hidden;
+  contain: paint;
+}
+
+.hud-stop::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--hud-stop-bg-hover);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.hud-stop:hover::before,
+.hud-stop.is-hovered::before {
+  opacity: 1;
+}
+
+.hud-stop:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--foreground) 40%, transparent);
+  outline-offset: 1px;
+}
+
+.hud-stop-glyph {
+  position: relative;
+  z-index: 1;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--foreground);
+}
+
+.hud-stop,
+.hud-handle {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.hud-stop *,
+.hud-handle * {
+  -webkit-user-drag: none;
+}
+
+/* Accessibility-only label -------------------------------------------- */
 .hud-status {
   position: absolute;
   width: 1px;
@@ -150,51 +287,110 @@ body {
   border: 0;
 }
 
+/* State machine ------------------------------------------------------- */
+.hud[data-state="silent-error"] .hud-handle,
+.hud[data-state="error"] .hud-handle {
+  display: none;
+}
+
+.hud[data-state="silent-error"] {
+  --hud-alert: var(--hud-warning);
+
+  gap: var(--sp-2);
+  padding-inline: var(--sp-3) var(--sp-4);
+  border-color: color-mix(in oklch, var(--hud-warning) 62%, var(--border));
+  background: color-mix(in oklch, var(--popover) 88%, var(--hud-warning) 12%);
+  animation: hud-shake 240ms var(--ease-out);
+}
+
+.hud[data-state="transcribing"] .hud-viz,
+.hud[data-state="pasting"] .hud-viz {
+  /* Braille replaces the bars + stop-button footprint while the handle stays
+   * available for moving the HUD during finalization. */
+  width: 88px;
+}
+
+.hud[data-state="silent-error"] .hud-viz,
+.hud[data-state="error"] .hud-viz {
+  width: 16px;
+}
+
 .hud[data-state="transcribing"] .hud-bars,
 .hud[data-state="pasting"] .hud-bars,
-.hud[data-state="success"] .hud-bars,
 .hud[data-state="silent-error"] .hud-bars,
 .hud[data-state="error"] .hud-bars {
   display: none;
 }
 
-.hud[data-state="transcribing"] .hud-progress,
-.hud[data-state="pasting"] .hud-progress {
-  display: block;
+.hud[data-state="transcribing"] .hud-braille,
+.hud[data-state="pasting"] .hud-braille {
+  display: flex;
 }
 
-.hud[data-state="pasting"] .hud-progress {
-  animation-duration: 620ms;
-}
-
-.hud[data-state="success"],
-.hud[data-state="silent-error"],
-.hud[data-state="error"] {
-  min-width: 29px;
-  padding-inline: 6px;
-}
-
-.hud[data-state="success"] .hud-success,
 .hud[data-state="silent-error"] .hud-error-mark,
 .hud[data-state="error"] .hud-error-mark {
+  display: flex;
+}
+
+.hud[data-state="silent-error"] .hud-error-text {
   display: block;
+}
+
+/* Stop button only matters while we're still capturing audio. */
+.hud[data-state="transcribing"] .hud-stop,
+.hud[data-state="pasting"] .hud-stop,
+.hud[data-state="silent-error"] .hud-stop,
+.hud[data-state="error"] .hud-stop {
+  display: none;
 }
 
 .hud[data-state="silent-error"],
 .hud[data-state="error"] {
-  border-color: color-mix(in oklch, var(--hud-danger) 36%, var(--border));
+  border-color: color-mix(in oklch, var(--hud-alert) 50%, var(--border));
 }
 
-@keyframes hud-spin {
-  to {
-    transform: rotate(360deg);
+/* Rapid blur-fade exit. Triggered by setting data-state="exiting" before
+ * the window hides — gives the pill a moment to dissolve instead of just
+ * snapping away. */
+.hud[data-state="exiting"] {
+  opacity: 0;
+  transform: scale(0.94);
+  filter: blur(6px);
+  pointer-events: none;
+}
+
+@keyframes hud-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+
+  22% {
+    transform: translateX(-2px);
+  }
+
+  44% {
+    transform: translateX(2px);
+  }
+
+  66% {
+    transform: translateX(-1px);
+  }
+
+  88% {
+    transform: translateX(1px);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hud-bar,
-  .hud-progress {
+  .hud,
+  .hud-stop,
+  .hud-stop::before,
+  .hud-bar::before {
     transition: none;
+  }
+
+  .hud[data-state="silent-error"] {
     animation: none;
   }
 }
