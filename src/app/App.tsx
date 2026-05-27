@@ -305,6 +305,7 @@ export function App() {
       dispatch({ type: "folderDeleted", folderId });
     } catch (err) {
       setError(messageFromError(err));
+      throw err;
     }
   }
 
@@ -572,7 +573,7 @@ export function App() {
                 onRenameFolder={(folderId, name, description) =>
                   void handleRenameFolder(folderId, name, description)
                 }
-                onDeleteFolder={(folderId) => void handleDeleteFolder(folderId)}
+                onDeleteFolder={(folderId) => handleDeleteFolder(folderId)}
                 onCreateNote={(folderId) => void handleCreateNote(folderId)}
                 onSelectNote={(noteId) => {
                   const folderId = state.selectedFolderId;

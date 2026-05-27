@@ -40,7 +40,10 @@ type FoldersWorkspaceProps = {
     name: string,
     description?: string,
   ) => void;
-  onDeleteFolder: (folderId: string, deleteNotes: boolean) => void;
+  onDeleteFolder: (
+    folderId: string,
+    deleteNotes: boolean,
+  ) => Promise<unknown> | void;
   onCreateNote: (folderId?: string) => void;
   onSelectNote: (noteId: string) => void;
   onAssignNoteToFolder: (noteId: string, folderId: string) => Promise<unknown>;
@@ -193,7 +196,13 @@ function FolderList({
               onOpen={() => onSelectFolder(folder.id)}
               onDropNote={(noteId) => {
                 const note = notes.find((item) => item.id === noteId);
-                if (!note || note.folderIds.includes(folder.id)) return;
+                if (
+                  !note ||
+                  (note.folderIds.length === 1 &&
+                    note.folderIds[0] === folder.id)
+                ) {
+                  return;
+                }
                 void onAssignNoteToFolder(noteId, folder.id);
               }}
               onOpenMenu={(anchor) => {
@@ -233,7 +242,8 @@ function FolderList({
         open={deleteFolderTarget !== undefined}
         onClose={() => setDeleteId(null)}
         onConfirm={() => {
-          if (deleteFolderTarget) onDeleteFolder(deleteFolderTarget.id, false);
+          if (!deleteFolderTarget) return;
+          return onDeleteFolder(deleteFolderTarget.id, false);
         }}
         title={`Delete "${deleteFolderTarget?.name ?? ""}"?`}
         description="Notes inside this folder will stay in your library."
@@ -352,6 +362,21 @@ function FolderCard({
     return false;
   }
 
+  function resetDropState() {
+    dragDepth.current = 0;
+    setDropActive(false);
+  }
+
+  useEffect(() => {
+    if (!dropActive) return;
+    document.addEventListener("dragend", resetDropState);
+    document.addEventListener("drop", resetDropState);
+    return () => {
+      document.removeEventListener("dragend", resetDropState);
+      document.removeEventListener("drop", resetDropState);
+    };
+  }, [dropActive]);
+
   return (
     <article
       className="folder-card"
@@ -385,14 +410,13 @@ function FolderCard({
       onDragLeave={(event) => {
         if (!hasNoteData(event)) return;
         dragDepth.current = Math.max(0, dragDepth.current - 1);
-        if (dragDepth.current === 0) setDropActive(false);
+        if (dragDepth.current === 0) resetDropState();
       }}
       onDrop={(event) => {
         if (!hasNoteData(event)) return;
         event.preventDefault();
         const noteId = event.dataTransfer.getData(NOTE_DND_MIME);
-        dragDepth.current = 0;
-        setDropActive(false);
+        resetDropState();
         if (noteId) onDropNote(noteId);
       }}
     >
