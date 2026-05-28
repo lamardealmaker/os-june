@@ -11,6 +11,7 @@ use std::{
 };
 
 const DEFAULT_SCRIBE_API_URL: &str = "https://scribe-api.opensoftware.network";
+const DEFAULT_DICTATION_CLEANUP_MODEL: &str = "nvidia-nemotron-3-nano-30b-a3b";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 const ERR_INSUFFICIENT_CREDITS: i64 = 4301;
 const ERR_TOKEN_EXPIRED: i64 = 3001;
@@ -77,6 +78,7 @@ pub struct GenerationProviderResult {
 #[derive(Debug, Clone)]
 pub struct DictateTranscribeRequest {
     pub audio_path: PathBuf,
+    pub context: Option<String>,
     pub session_id: String,
     pub utterance_id: String,
 }
@@ -220,6 +222,15 @@ pub async fn dictate_transcribe(
         .text("utteranceId", request.utterance_id)
         .text("model", crate::providers::transcription_model())
         .part("audio", audio_part(audio, &filename, &request.audio_path)?);
+    let mut form = form;
+    if let Some(context) = request
+        .context
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        form = form.text("context", context.to_string());
+    }
     let response: TranscribeResponse = post_multipart("/v1/dictate", form).await?;
     Ok(TranscriptionProviderResult {
         text: response.text,
@@ -235,7 +246,7 @@ pub async fn cleanup_text(params: DictateCleanupRequestParams) -> Result<String,
         text: params.text,
         dictionary_context: params.dictionary_context,
         style: params.style,
-        model: crate::providers::generation_model(),
+        model: DEFAULT_DICTATION_CLEANUP_MODEL.to_string(),
     };
     let response: CleanupResponse = post_json("/v1/dictate/cleanup", &body).await?;
     Ok(response.text)

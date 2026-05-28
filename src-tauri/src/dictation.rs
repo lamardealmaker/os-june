@@ -4,8 +4,8 @@ use crate::domain::{
 };
 use crate::providers::{configured_transcription_provider, OPENAI_PROVIDER, VENICE_PROVIDER};
 use crate::scribe_api::{
-    DictateCleanupRequestParams, DictateTranscribeRequest, TranscriptionProviderResult,
-    cleanup_text, dictate_transcribe,
+    cleanup_text, dictate_transcribe, DictateCleanupRequestParams, DictateTranscribeRequest,
+    TranscriptionProviderResult,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
@@ -22,7 +22,7 @@ use tauri::{
 };
 
 const DICTATION_TRANSCRIPTION_CONTEXT: &str = "Transcribe this as clean hands-free dictation for direct insertion into the active app. Preserve the speaker's intended words, language, and meaning. Remove filler sounds and accidental false starts when they are not meaningful, especially um, uh, ah, er, and a... stutters. Do not remove intentional articles such as a or an when they are grammatically needed. Convert spoken punctuation and formatting into text punctuation, including comma, period, question mark, exclamation point, colon, semicolon, dash, newline, and new paragraph. Convert quote/unquote, open quote/close quote, and start quote/end quote into actual quotation marks around the quoted words. Output only the dictated text.";
-const DICTATION_CLEANUP_TIMEOUT_MS: u64 = 4_000;
+const DICTATION_CLEANUP_TIMEOUT_MS: u64 = 15_000;
 
 pub struct HelperProcess {
     child: Child,
@@ -1223,12 +1223,13 @@ async fn transcribe_recording_ready(app: AppHandle, audio_path: PathBuf) {
     let dictionary_context = dictionary_context_for_app(&app).await;
     let session_id = dictation_session_id();
     let utterance_id = uuid::Uuid::new_v4().to_string();
-    let _ = merge_transcription_context(
+    let transcription_context = merge_transcription_context(
         dictionary_context.as_deref(),
         Some(dictation_transcription_context(style).as_str()),
     );
     let result = dictate_transcribe(DictateTranscribeRequest {
         audio_path,
+        context: transcription_context,
         session_id: session_id.clone(),
         utterance_id: utterance_id.clone(),
     })
@@ -1301,9 +1302,11 @@ async fn maybe_cleanup_dictation_result(
         Ok(transcript) => transcript,
         Err(error) => return Err(error),
     };
-    if provider == OPENAI_PROVIDER {
-        return Ok(transcript);
-    }
+    tracing::info!(
+        provider,
+        style = ?style,
+        "dictation cleanup starting",
+    );
     match cleanup_dictation_text(
         &transcript.text,
         dictionary_context.as_deref(),
@@ -1316,6 +1319,7 @@ async fn maybe_cleanup_dictation_result(
         Ok(cleaned) => {
             if !cleaned.trim().is_empty() {
                 transcript.text = cleaned;
+                tracing::info!(provider, "dictation cleanup applied");
             }
         }
         Err(error) => {

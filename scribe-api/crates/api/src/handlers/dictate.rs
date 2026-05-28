@@ -41,6 +41,7 @@ pub(crate) async fn transcribe(
             utterance_id: form.required_text("utteranceId")?,
             audio,
             filename,
+            context: form.optional_text("context"),
             model_id: ModelId(model_id),
         })
         .await?;

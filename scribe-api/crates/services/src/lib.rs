@@ -25,8 +25,9 @@ pub use pricing::{PricingError, PricingTable};
 #[cfg(test)]
 mod tests {
     use super::{
-        DictateCleanupParams, DictateService, DictateServiceDeps, NoteGenerateParams,
-        NoteGenerateService, NoteGenerateServiceDeps, PricingTable, ServiceError,
+        DictateCleanupParams, DictateService, DictateServiceDeps, DictateTranscribeParams,
+        NoteGenerateParams, NoteGenerateService, NoteGenerateServiceDeps, PricingTable,
+        ServiceError,
     };
     use async_trait::async_trait;
     use pretty_assertions::assert_eq;
@@ -155,6 +156,45 @@ mod tests {
         assert_eq!(
             charge_call,
             "dictate_cleanup:usr_123:session_1:utt_2:agt_test"
+        );
+    }
+
+    #[tokio::test]
+    async fn dictate_transcribe_forwards_context_to_transcriber() {
+        let os_accounts = Arc::new(RecordingOsAccounts::default());
+        let transcriber = Arc::new(RecordingTranscriber::default());
+        let service = DictateService::new(DictateServiceDeps {
+            pricing: Arc::new(PricingTable::new(models([(
+                "audio-model",
+                PriceUnit::Seconds,
+                2,
+                ModelType::Asr,
+            )]))),
+            os_accounts,
+            transcriber: transcriber.clone(),
+            cleaner: Arc::new(FixedCleaner),
+            duration_probe: Arc::new(FixedDurationProbe),
+            transcribe_hold_ttl_seconds: 30,
+            cleanup_hold_ttl_seconds: 30,
+            flat_estimate_credits: 1024,
+        });
+
+        service
+            .transcribe(DictateTranscribeParams {
+                user_id: UserId("usr_123".to_string()),
+                session_id: "session_1".to_string(),
+                utterance_id: "utt_2".to_string(),
+                audio: vec![1, 2, 3],
+                filename: "dictation.wav".to_string(),
+                context: Some("Writing style: formal.".to_string()),
+                model_id: ModelId("audio-model".to_string()),
+            })
+            .await
+            .expect("transcribe succeeds with happy path");
+
+        assert_eq!(
+            transcriber.last_context(),
+            Some("Writing style: formal.".to_string())
         );
     }
 
@@ -325,6 +365,37 @@ mod tests {
             &self,
             _request: TranscriptionRequest,
         ) -> Result<Transcript, DomainError> {
+            Ok(Transcript {
+                text: "Transcript".to_string(),
+                language: Some("en".to_string()),
+                provider: "test".to_string(),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingTranscriber {
+        last_context: Mutex<Option<String>>,
+    }
+
+    impl RecordingTranscriber {
+        fn last_context(&self) -> Option<String> {
+            self.last_context
+                .lock()
+                .ok()
+                .and_then(|value| value.clone())
+        }
+    }
+
+    #[async_trait]
+    impl Transcriber for RecordingTranscriber {
+        async fn transcribe(
+            &self,
+            request: TranscriptionRequest,
+        ) -> Result<Transcript, DomainError> {
+            if let Ok(mut last_context) = self.last_context.lock() {
+                *last_context = request.context;
+            }
             Ok(Transcript {
                 text: "Transcript".to_string(),
                 language: Some("en".to_string()),
