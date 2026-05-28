@@ -1,15 +1,15 @@
 use clap::{Parser, Subcommand};
 use scribe_api::{ApiLimits, ApiState, ApiStateParams};
-use scribe_config::{AppConfig, ModelProvider};
+use scribe_config::{AppConfig, ModelPriceConfig, ModelProvider};
 use scribe_providers::{
     JwksTokenVerifier, MultiFormatDurationProbe, OsAccountsHttpClient, RoutingTranscriber,
-    VeniceCleaner, VeniceGenerator, default_client, jwks_client,
+    VeniceCleaner, VeniceGenerator, VeniceModelCatalog, default_client, jwks_client,
 };
 use scribe_services::{
     DictateService, DictateServiceDeps, NoteGenerateService, NoteGenerateServiceDeps,
     NoteTranscribeService, NoteTranscribeServiceDeps, PricingTable,
 };
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Parser)]
@@ -36,23 +36,48 @@ async fn main() -> anyhow::Result<()> {
 async fn serve() -> anyhow::Result<()> {
     let config = scribe_config::load()?;
     let address: SocketAddr = format!("{}:{}", config.server.host, config.server.port).parse()?;
-    let app = build_router(&config);
+    let http = default_client();
+    let pricing = load_pricing(&config, http.clone()).await;
+    let app = build_router(&config, http, pricing);
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "scribe-api listening");
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-fn build_router(config: &AppConfig) -> axum::Router {
-    let http = default_client();
-    let openai_model_ids = config
-        .pricing
+async fn load_pricing(
+    config: &AppConfig,
+    http: reqwest::Client,
+) -> BTreeMap<String, ModelPriceConfig> {
+    let mut pricing = config.pricing.clone();
+    match VeniceModelCatalog::from_config(http, &config.upstreams.venice)
+        .priced_models()
+        .await
+    {
+        Ok(models) => {
+            let count = models.len();
+            pricing.extend(models);
+            tracing::info!(count, "loaded Venice model catalog");
+        }
+        Err(error) => {
+            tracing::warn!(%error, "failed to load Venice model catalog; using configured model pricing only");
+        }
+    }
+    pricing
+}
+
+fn build_router(
+    config: &AppConfig,
+    http: reqwest::Client,
+    pricing_config: BTreeMap<String, ModelPriceConfig>,
+) -> axum::Router {
+    let openai_model_ids = pricing_config
         .iter()
         .filter(|(_, model)| model.provider == ModelProvider::Openai)
         .map(|(model_id, _)| model_id.clone())
         .collect::<Vec<_>>();
 
-    let pricing = Arc::new(PricingTable::new(config.pricing.clone()));
+    let pricing = Arc::new(PricingTable::new(pricing_config));
     let os_accounts: Arc<dyn scribe_domain::OsAccountsClient> = Arc::new(
         OsAccountsHttpClient::from_config(http.clone(), &config.os_accounts),
     );

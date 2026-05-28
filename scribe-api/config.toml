@@ -37,6 +37,11 @@ credits_per_million_seconds = 1000000
 provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o mini transcribe"
+description = "Fast OpenAI speech-to-text model."
+privacy = "OpenAI"
+context_tokens = 16000
+traits = ["prompt"]
+capabilities = []
 
 [pricing."gpt-4o-transcribe"]
 unit = "seconds"
@@ -44,6 +49,11 @@ credits_per_million_seconds = 2000000
 provider = "openai"
 model_type = "asr"
 display_name = "GPT-4o transcribe"
+description = "Large OpenAI speech-to-text model."
+privacy = "OpenAI"
+context_tokens = 16000
+traits = ["prompt"]
+capabilities = []
 
 [pricing."nvidia/parakeet-tdt-0.6b-v3"]
 unit = "seconds"

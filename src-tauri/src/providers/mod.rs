@@ -86,19 +86,34 @@ pub struct VeniceModelDto {
 
 impl From<crate::scribe_api::ModelDto> for VeniceModelDto {
     fn from(value: crate::scribe_api::ModelDto) -> Self {
-        let pricing = serde_json::json!({ "display": value.price_description });
+        let pricing = pricing_with_display(value.pricing, &value.price_description);
         Self {
-            description: None,
+            description: value.description,
             provider: value.provider,
             id: value.id,
             name: value.name,
             model_type: value.model_type,
-            privacy: None,
+            privacy: value.privacy,
             pricing: Some(pricing),
-            context_tokens: None,
-            traits: Vec::new(),
-            capabilities: Vec::new(),
+            context_tokens: value.context_tokens,
+            traits: value.traits,
+            capabilities: value.capabilities,
         }
+    }
+}
+
+fn pricing_with_display(pricing: Option<serde_json::Value>, display: &str) -> serde_json::Value {
+    let display = display.trim();
+    match pricing {
+        Some(serde_json::Value::Object(mut map)) => {
+            if !display.is_empty() {
+                map.entry("display".to_string())
+                    .or_insert_with(|| serde_json::Value::String(display.to_string()));
+            }
+            serde_json::Value::Object(map)
+        }
+        Some(value) => value,
+        None => serde_json::json!({ "display": display }),
     }
 }
 

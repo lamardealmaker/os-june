@@ -278,6 +278,12 @@ mod tests {
                         provider: ModelProvider::Openai,
                         model_type,
                         display_name: id.to_string(),
+                        description: None,
+                        privacy: None,
+                        pricing: None,
+                        context_tokens: None,
+                        traits: Vec::new(),
+                        capabilities: Vec::new(),
                     },
                 )
             })

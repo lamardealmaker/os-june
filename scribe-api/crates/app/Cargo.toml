@@ -19,6 +19,7 @@ anyhow = "1"
 axum.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
+reqwest.workspace = true
 scribe-api.workspace = true
 scribe-config.workspace = true
 scribe-domain.workspace = true

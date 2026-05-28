@@ -1383,6 +1383,7 @@ dependencies = [
  "axum",
  "clap",
  "dotenvy",
+ "reqwest",
  "scribe-api",
  "scribe-config",
  "scribe-domain",
@@ -1402,6 +1403,7 @@ dependencies = [
  "scribe-domain",
  "scribe-services",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tower",
  "tower-http",
@@ -1415,6 +1417,7 @@ dependencies = [
  "figment",
  "pretty_assertions",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

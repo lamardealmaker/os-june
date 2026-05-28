@@ -186,6 +186,18 @@ pub struct ModelPriceConfig {
     pub provider: ModelProvider,
     pub model_type: ModelType,
     pub display_name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub privacy: Option<String>,
+    #[serde(default)]
+    pub pricing: Option<serde_json::Value>,
+    #[serde(default)]
+    pub context_tokens: Option<i64>,
+    #[serde(default)]
+    pub traits: Vec<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
 }
 
 impl Default for AppConfig {
@@ -201,6 +213,12 @@ impl Default for AppConfig {
                 provider: ModelProvider::Openai,
                 model_type: ModelType::Asr,
                 display_name: "GPT-4o mini transcribe".to_string(),
+                description: Some("Fast OpenAI speech-to-text model.".to_string()),
+                privacy: Some("OpenAI".to_string()),
+                pricing: Some(serde_json::json!({ "display": "$0.001/sec audio" })),
+                context_tokens: Some(16_000),
+                traits: vec!["prompt".to_string()],
+                capabilities: Vec::new(),
             },
         );
         pricing.insert(
@@ -213,6 +231,12 @@ impl Default for AppConfig {
                 provider: ModelProvider::Venice,
                 model_type: ModelType::Asr,
                 display_name: "Parakeet TDT 0.6B v3".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
             },
         );
         pricing.insert(
@@ -225,6 +249,12 @@ impl Default for AppConfig {
                 provider: ModelProvider::Venice,
                 model_type: ModelType::Text,
                 display_name: "GLM 5".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
             },
         );
         Self {
@@ -374,6 +404,12 @@ mod tests {
                 provider: ModelProvider::Venice,
                 model_type: ModelType::Asr,
                 display_name: "bad".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
             },
         );
         let config = AppConfig {
@@ -399,6 +435,12 @@ mod tests {
                 provider: ModelProvider::Openai,
                 model_type: ModelType::Asr,
                 display_name: "free".to_string(),
+                description: None,
+                privacy: None,
+                pricing: None,
+                context_tokens: None,
+                traits: Vec::new(),
+                capabilities: Vec::new(),
             },
         );
         let config = AppConfig {

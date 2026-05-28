@@ -19,5 +19,5 @@ pub use m4a_probe::{M4aDurationProbe, M4aProbeError};
 pub use openai::OpenAiTranscriber;
 pub use os_accounts::OsAccountsHttpClient;
 pub use routing::RoutingTranscriber;
-pub use venice::{VeniceCleaner, VeniceGenerator, VeniceTranscriber};
+pub use venice::{VeniceCleaner, VeniceGenerator, VeniceModelCatalog, VeniceTranscriber};
 pub use wav_probe::{ProbeError, WavDurationProbe};
