@@ -21,6 +21,32 @@ export function AccountSettings({
   onAccountChanged,
   onRefresh,
 }: Props) {
+  return (
+    <div className="settings-page">
+      <header className="settings-header">
+        <h1 className="settings-title">Account</h1>
+        <p className="settings-description">
+          Sign in with Open Software to use your shared identity and credit
+          balance across the network.
+        </p>
+      </header>
+
+      <AccountSettingsSection
+        account={account}
+        loading={loading}
+        onAccountChanged={onAccountChanged}
+        onRefresh={onRefresh}
+      />
+    </div>
+  );
+}
+
+export function AccountSettingsSection({
+  account,
+  loading,
+  onAccountChanged,
+  onRefresh,
+}: Props) {
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
@@ -83,117 +109,100 @@ export function AccountSettings({
   }
 
   return (
-    <div className="settings-page">
-      <header className="settings-header">
-        <h1 className="settings-title">Account</h1>
-        <p className="settings-description">
-          Sign in with Open Software to use your shared identity and credit
-          balance across the network.
-        </p>
-        {status ? <p className="settings-status">{status}</p> : null}
-      </header>
+    <section className="settings-group" aria-labelledby="account-heading">
+      <h2 id="account-heading" className="settings-group-heading">
+        Account
+      </h2>
+      {status ? <p className="settings-status">{status}</p> : null}
+      <div className="settings-card">
+        <div className="settings-rows">
+          <div className="settings-row">
+            <div className="settings-row-info">
+              <h3 className="settings-row-title">
+                {loading
+                  ? "Checking sign-in…"
+                  : account.signedIn
+                    ? displayName(account)
+                    : "Not signed in"}
+              </h3>
+              <p className="settings-row-description">
+                {account.signedIn
+                  ? (account.user?.email ??
+                    `@${account.user?.handle ?? "account"}`)
+                  : account.configured
+                    ? "Your login and credits are managed by Open Software."
+                    : "Open Software sign-in is not configured for this build."}
+              </p>
+            </div>
+            <div className="settings-row-control">
+              {account.signedIn ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={busy}
+                  onClick={() => void handleSignOut()}
+                >
+                  Sign out
+                </button>
+              ) : busy ? (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleCancel()}
+                >
+                  Cancel
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  disabled={loading || !account.configured}
+                  onClick={() => void handleSignIn()}
+                >
+                  Sign in with Open Software
+                </button>
+              )}
+            </div>
+          </div>
 
-      <section className="settings-group" aria-labelledby="identity-heading">
-        <h2 id="identity-heading" className="settings-group-heading">
-          Identity
-        </h2>
-        <div className="settings-card">
-          <div className="settings-rows">
+          {account.signedIn ? (
             <div className="settings-row">
               <div className="settings-row-info">
                 <h3 className="settings-row-title">
-                  {loading
-                    ? "Checking sign-in…"
-                    : account.signedIn
-                      ? displayName(account)
-                      : "Not signed in"}
+                  {formatCredits(account.balance?.credits)} credits
                 </h3>
                 <p className="settings-row-description">
-                  {account.signedIn
-                    ? (account.user?.email ??
-                      `@${account.user?.handle ?? "account"}`)
-                    : "Your login and credits are managed by Open Software."}
+                  {formatUsd(account.balance?.usdMillis)} available. Credits
+                  are added by Open Software after checkout.
                 </p>
               </div>
               <div className="settings-row-control">
-                {account.signedIn ? (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={busy}
-                    onClick={() => void handleSignOut()}
-                  >
-                    Sign out
-                  </button>
-                ) : busy ? (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => void handleCancel()}
-                  >
-                    Cancel
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    disabled={loading}
-                    onClick={() => void handleSignIn()}
-                  >
-                    Sign in with Open Software
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  aria-label="Refresh balance"
+                  title="Refresh balance"
+                  disabled={refreshing}
+                  onClick={() => void handleRefresh()}
+                >
+                  <IconArrowRotateClockwise
+                    size={14}
+                    data-spinning={refreshing ? "true" : undefined}
+                  />
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => void handleTopUp()}
+                >
+                  Top up credits
+                </button>
               </div>
             </div>
-          </div>
+          ) : null}
         </div>
-      </section>
-
-      {account.signedIn ? (
-        <section className="settings-group" aria-labelledby="credits-heading">
-          <h2 id="credits-heading" className="settings-group-heading">
-            Credits
-          </h2>
-          <div className="settings-card">
-            <div className="settings-rows">
-              <div className="settings-row">
-                <div className="settings-row-info">
-                  <h3 className="settings-row-title">
-                    {formatCredits(account.balance?.credits)} credits
-                  </h3>
-                  <p className="settings-row-description">
-                    {formatUsd(account.balance?.usdMillis)} available. Credits
-                    are added by Open Software after checkout.
-                  </p>
-                </div>
-                <div className="settings-row-control">
-                  <button
-                    type="button"
-                    className="btn btn-ghost"
-                    aria-label="Refresh balance"
-                    title="Refresh balance"
-                    disabled={refreshing}
-                    onClick={() => void handleRefresh()}
-                  >
-                    <IconArrowRotateClockwise
-                      size={14}
-                      data-spinning={refreshing ? "true" : undefined}
-                    />
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => void handleTopUp()}
-                  >
-                    Top up credits
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-      ) : null}
-    </div>
+      </div>
+    </section>
   );
 }
 

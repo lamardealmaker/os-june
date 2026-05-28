@@ -21,6 +21,7 @@ import {
   setVeniceModel,
 } from "../../lib/tauri";
 import type {
+  AccountStatus,
   DictationHelperEvent,
   DictationMicrophoneDeviceDto,
   DictationShortcutKind,
@@ -33,6 +34,7 @@ import type {
   RecordingSourceReadinessDto,
   VeniceModelDto,
 } from "../../lib/tauri";
+import { AccountSettingsSection } from "../account/AccountSettings";
 import { Dialog } from "../ui/Dialog";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
@@ -122,17 +124,25 @@ const DEFAULT_PROVIDER_MODELS: ProviderModelSettingsDto = {
 };
 
 type AppSettingsProps = {
+  account: AccountStatus;
+  accountLoading: boolean;
   sourceMode: RecordingSourceMode;
   sourceReadiness?: RecordingSourceReadinessDto;
   checkingSourceReadiness: boolean;
+  onAccountChanged: (next: AccountStatus) => void;
+  onAccountRefresh: () => Promise<AccountStatus | undefined>;
   onSourceModeChange: (mode: RecordingSourceMode) => void;
   onEnableSystemAudio: () => void;
 };
 
 export function AppSettings({
+  account,
+  accountLoading,
   sourceMode,
   sourceReadiness,
   checkingSourceReadiness,
+  onAccountChanged,
+  onAccountRefresh,
   onSourceModeChange,
   onEnableSystemAudio,
 }: AppSettingsProps) {
@@ -422,6 +432,13 @@ export function AppSettings({
           Manage audio, dictation, and AI models for notes.
         </p>
       </header>
+
+      <AccountSettingsSection
+        account={account}
+        loading={accountLoading}
+        onAccountChanged={onAccountChanged}
+        onRefresh={onAccountRefresh}
+      />
 
       <section
         className="settings-group"

@@ -2220,6 +2220,66 @@ input:focus-visible,
 
 /* Settings page ------------------------------------------------------ */
 
+.account-gate-shell {
+  position: relative;
+  display: grid;
+  min-height: 100vh;
+  background: var(--background);
+}
+
+.account-gate {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: calc(var(--sp-10) + 20px) var(--sp-6) var(--sp-10);
+}
+
+.account-gate-panel {
+  width: min(100%, 560px);
+}
+
+.account-gate-header {
+  margin-bottom: var(--sp-6);
+}
+
+.account-gate-brand {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+}
+
+.account-gate-logo {
+  display: block;
+  height: 22px;
+  width: auto;
+}
+
+.account-gate-logo.dark {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .account-gate-logo.light {
+    display: none;
+  }
+  .account-gate-logo.dark {
+    display: block;
+  }
+}
+
+[data-theme="dark"] .account-gate-logo.light {
+  display: none;
+}
+[data-theme="dark"] .account-gate-logo.dark {
+  display: block;
+}
+[data-theme="light"] .account-gate-logo.light {
+  display: block;
+}
+[data-theme="light"] .account-gate-logo.dark {
+  display: none;
+}
+
 .settings-page {
   width: 100%;
   max-width: 720px;

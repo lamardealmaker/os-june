@@ -2,7 +2,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { AccountSettings } from "../components/account/AccountSettings";
+import { AccountGate } from "../components/account/AccountGate";
 import {
   SignInPrompt,
   type SignInPromptReason,
@@ -95,6 +95,7 @@ export function App() {
     refresh: refreshAccount,
     setAccount,
   } = useAccountStatus();
+  const appBlocked = accountLoading || shouldBlockOnSignIn(account);
   const [signInPrompt, setSignInPrompt] = useState<{
     reason: SignInPromptReason;
     pendingAction?: () => void;
@@ -166,6 +167,7 @@ export function App() {
   const microphoneBlocked = isDeniedPermission(microphoneStatus);
 
   useEffect(() => {
+    if (appBlocked) return;
     bootstrapApp()
       .then(async (payload) => {
         const seeded = withFakeRecovery(payload);
@@ -183,12 +185,13 @@ export function App() {
         }
       })
       .catch((err: unknown) => setError(messageFromError(err)));
-  }, []);
+  }, [appBlocked]);
 
   // Probe with "microphonePlusSystem" on mount so sourceReadiness always
   // has the system source. The helper's preflight surfaces the native
   // TCC prompt on first install as a side-effect of this call.
   useEffect(() => {
+    if (appBlocked) return;
     let cancelled = false;
     setCheckingSourceReadiness(true);
     checkRecordingSourceReadiness("microphonePlusSystem")
@@ -212,13 +215,14 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [appBlocked]);
 
   // Refresh permission state whenever the app regains focus — covers the
   // common case where the user flipped a toggle in System Settings and
   // returns to OS Scribe. The helper poll is what surfaces fresh mic /
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
+    if (appBlocked) return;
     function refresh() {
       void checkRecordingSourceReadiness("microphonePlusSystem")
         .then(setSourceReadiness)
@@ -229,7 +233,7 @@ export function App() {
     }
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, []);
+  }, [appBlocked]);
 
   function handleSourceModeChange(next: RecordingSourceMode) {
     setUserWantsSystemAudio(next === "microphonePlusSystem");
@@ -559,6 +563,25 @@ export function App() {
     }
   }
 
+  if (appBlocked) {
+    return (
+      <main className="account-gate-shell">
+        <div
+          className="titlebar-drag"
+          aria-hidden
+          data-tauri-drag-region
+          onPointerDown={handleTitlebarPointerDown}
+        />
+        <AccountGate
+          account={account}
+          loading={accountLoading}
+          onAccountChanged={setAccount}
+          onRefresh={refreshAccount}
+        />
+      </main>
+    );
+  }
+
   return (
     <main
       className="app-shell"
@@ -621,18 +644,15 @@ export function App() {
         <div className="main-panel-body">
           {error ? <p className="error-banner">{error}</p> : null}
           <div className="workspace">
-            {activeView === "account" ? (
-              <AccountSettings
-                account={account}
-                loading={accountLoading}
-                onAccountChanged={setAccount}
-                onRefresh={refreshAccount}
-              />
-            ) : activeView === "settings" ? (
+            {activeView === "settings" ? (
               <AppSettings
+                account={account}
+                accountLoading={accountLoading}
                 sourceMode={sourceMode}
                 sourceReadiness={sourceReadiness}
                 checkingSourceReadiness={checkingSourceReadiness}
+                onAccountChanged={setAccount}
+                onAccountRefresh={refreshAccount}
                 onSourceModeChange={handleSourceModeChange}
                 onEnableSystemAudio={handleEnableSystemAudio}
               />

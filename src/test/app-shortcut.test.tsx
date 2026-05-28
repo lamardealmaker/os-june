@@ -29,6 +29,11 @@ const mocks = vi.hoisted(() => ({
   recoverRecording: vi.fn(),
   dictationHelperCommand: vi.fn(),
   listDictationHistory: vi.fn(),
+  osAccountsStatus: vi.fn(),
+  osAccountsLogin: vi.fn(),
+  osAccountsCancelLogin: vi.fn(),
+  osAccountsLogout: vi.fn(),
+  osAccountsTopUp: vi.fn(),
   playRecordingSound: vi.fn(),
   preloadRecordingSounds: vi.fn(),
 }));
@@ -69,6 +74,11 @@ vi.mock("../lib/tauri", () => ({
   recoverRecording: mocks.recoverRecording,
   dictationHelperCommand: mocks.dictationHelperCommand,
   listDictationHistory: mocks.listDictationHistory,
+  osAccountsStatus: mocks.osAccountsStatus,
+  osAccountsLogin: mocks.osAccountsLogin,
+  osAccountsCancelLogin: mocks.osAccountsCancelLogin,
+  osAccountsLogout: mocks.osAccountsLogout,
+  osAccountsTopUp: mocks.osAccountsTopUp,
 }));
 
 const now = "2026-05-19T10:00:00Z";
@@ -125,6 +135,21 @@ describe("App shortcuts", () => {
       items: [],
       retentionDays: 7,
     });
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
+      balance: { credits: 1200, usdMillis: 1200 },
+    });
+    mocks.osAccountsLogin.mockResolvedValue({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
+      balance: { credits: 1200, usdMillis: 1200 },
+    });
+    mocks.osAccountsLogout.mockResolvedValue(undefined);
+    mocks.osAccountsCancelLogin.mockResolvedValue(undefined);
+    mocks.osAccountsTopUp.mockResolvedValue(undefined);
     mocks.updateNote.mockImplementation(async (input) => ({
       ...first,
       ...input,
@@ -182,6 +207,29 @@ describe("App shortcuts", () => {
       screen.getByRole("button", { name: /back to first note/i }),
     );
 
+    expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
+  });
+
+  it("gates the app until the user signs in", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsStatus.mockResolvedValue({
+      signedIn: false,
+      configured: true,
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Sign in to Scribe" }),
+    ).toBeInTheDocument();
+    expect(mocks.bootstrapApp).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "New note" })).toBeNull();
+
+    await user.click(
+      screen.getByRole("button", { name: "Sign in with Open Software" }),
+    );
+
+    await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
     expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
   });
 });

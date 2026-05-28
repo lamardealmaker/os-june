@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   openPrivacySettings: vi.fn(),
   setDictationShortcut: vi.fn(),
   setDictationMicrophone: vi.fn(),
+  osAccountsLogin: vi.fn(),
+  osAccountsCancelLogin: vi.fn(),
+  osAccountsLogout: vi.fn(),
+  osAccountsTopUp: vi.fn(),
   listen: vi.fn(),
   eventHandler: undefined as ((event: { payload: string }) => void) | undefined,
 }));
@@ -27,6 +31,10 @@ vi.mock("../lib/tauri", () => ({
   openPrivacySettings: mocks.openPrivacySettings,
   setDictationShortcut: mocks.setDictationShortcut,
   setDictationMicrophone: mocks.setDictationMicrophone,
+  osAccountsLogin: mocks.osAccountsLogin,
+  osAccountsCancelLogin: mocks.osAccountsCancelLogin,
+  osAccountsLogout: mocks.osAccountsLogout,
+  osAccountsTopUp: mocks.osAccountsTopUp,
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
@@ -60,6 +68,18 @@ const baseSettings: DictationSettingsDto = {
   },
   microphone: {},
   style: "standard",
+};
+
+const signedInAccount = {
+  signedIn: true,
+  configured: true,
+  user: {
+    id: "usr_123",
+    handle: "junho",
+    email: "junho@example.com",
+    displayName: "Junho",
+  },
+  balance: { credits: 1200, usdMillis: 1200 },
 };
 
 describe("AppSettings", () => {
@@ -180,8 +200,12 @@ describe("AppSettings", () => {
     const onSourceModeChange = vi.fn();
     render(
       <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
         onSourceModeChange={onSourceModeChange}
         onEnableSystemAudio={vi.fn()}
       />,
@@ -216,8 +240,12 @@ describe("AppSettings", () => {
     const user = userEvent.setup();
     render(
       <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
         onSourceModeChange={vi.fn()}
         onEnableSystemAudio={vi.fn()}
       />,
@@ -323,8 +351,12 @@ describe("AppSettings", () => {
     const user = userEvent.setup();
     render(
       <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
         onSourceModeChange={vi.fn()}
         onEnableSystemAudio={vi.fn()}
       />,
@@ -368,8 +400,12 @@ describe("AppSettings", () => {
   it("shows app build metadata", async () => {
     render(
       <AppSettings
+        account={signedInAccount}
+        accountLoading={false}
         sourceMode="microphoneOnly"
         checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
         onSourceModeChange={vi.fn()}
         onEnableSystemAudio={vi.fn()}
       />,
