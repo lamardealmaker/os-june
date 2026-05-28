@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
-import type { BootstrapResponse, NoteDto } from "../lib/tauri";
+import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
 const mocks = vi.hoisted(() => ({
   listen: vi.fn(),
@@ -220,16 +220,44 @@ describe("App shortcuts", () => {
     render(<App />);
 
     expect(
-      await screen.findByRole("heading", { name: "Sign in to Scribe" }),
+      await screen.findByRole("heading", { name: "Welcome to Scribe" }),
     ).toBeInTheDocument();
     expect(mocks.bootstrapApp).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "New note" })).toBeNull();
 
     await user.click(
-      screen.getByRole("button", { name: "Sign in with Open Software" }),
+      screen.getByRole("button", { name: "Continue with OpenSoftware" }),
     );
 
     await waitFor(() => expect(mocks.bootstrapApp).toHaveBeenCalledOnce());
+    expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
+  });
+
+  it("does not flash the sign-in gate while account status is loading", async () => {
+    let resolveStatus: ((status: AccountStatus) => void) | undefined;
+    mocks.osAccountsStatus.mockReturnValue(
+      new Promise<AccountStatus>((resolve) => {
+        resolveStatus = resolve;
+      }),
+    );
+
+    render(<App />);
+
+    expect(
+      screen.queryByRole("heading", { name: "Welcome to Scribe" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Continue with OpenSoftware" }),
+    ).toBeNull();
+    expect(mocks.bootstrapApp).not.toHaveBeenCalled();
+
+    resolveStatus?.({
+      signedIn: true,
+      configured: true,
+      user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
+      balance: { usdMillis: 1200 },
+    });
+
     expect(await screen.findByDisplayValue("First note")).toBeInTheDocument();
   });
 });
