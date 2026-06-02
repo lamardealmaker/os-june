@@ -5,6 +5,10 @@ fn main() {
     println!("cargo:rerun-if-changed=icons/32x32.png");
     println!("cargo:rerun-if-changed=icons/128x128.png");
     println!("cargo:rerun-if-changed=icons/128x128@2x.png");
+    println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_URL");
+    println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_API_URL");
+    println!("cargo:rerun-if-env-changed=OS_ACCOUNTS_CLIENT_ID");
+    println!("cargo:rerun-if-env-changed=SCRIBE_API_URL");
     build_system_audio_helper();
     build_dictation_helper();
     tauri_build::build();

@@ -76,6 +76,10 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          OS_ACCOUNTS_URL: ${{ secrets.OS_ACCOUNTS_URL }}
+          OS_ACCOUNTS_API_URL: ${{ secrets.OS_ACCOUNTS_API_URL }}
+          OS_ACCOUNTS_CLIENT_ID: ${{ secrets.OS_ACCOUNTS_CLIENT_ID }}
+          SCRIBE_API_URL: ${{ secrets.SCRIBE_API_URL }}
         run: |
           set -euo pipefail
           missing=0
@@ -85,7 +89,11 @@ jobs:
             APPLE_SIGNING_IDENTITY \
             APPLE_API_ISSUER \
             APPLE_API_KEY \
-            APPLE_API_KEY_P8
+            APPLE_API_KEY_P8 \
+            OS_ACCOUNTS_URL \
+            OS_ACCOUNTS_API_URL \
+            OS_ACCOUNTS_CLIENT_ID \
+            SCRIBE_API_URL
           do
             if [ -z "${!name:-}" ]; then
               echo "::error::${name} is required to build a distributable signed and notarized DMG."
@@ -102,6 +110,10 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          OS_ACCOUNTS_URL: ${{ secrets.OS_ACCOUNTS_URL }}
+          OS_ACCOUNTS_API_URL: ${{ secrets.OS_ACCOUNTS_API_URL }}
+          OS_ACCOUNTS_CLIENT_ID: ${{ secrets.OS_ACCOUNTS_CLIENT_ID }}
+          SCRIBE_API_URL: ${{ secrets.SCRIBE_API_URL }}
         run: pnpm tauri:build:signed-dmg
 
       - name: Upload DMG

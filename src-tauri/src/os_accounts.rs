@@ -130,9 +130,12 @@ impl Config {
     fn load() -> Self {
         load_local_env();
         Self {
-            accounts_url: env_trimmed("OS_ACCOUNTS_URL"),
-            api_url: env_trimmed("OS_ACCOUNTS_API_URL"),
-            client_id: env_trimmed("OS_ACCOUNTS_CLIENT_ID"),
+            accounts_url: env_or_build_trimmed("OS_ACCOUNTS_URL", option_env!("OS_ACCOUNTS_URL")),
+            api_url: env_or_build_trimmed("OS_ACCOUNTS_API_URL", option_env!("OS_ACCOUNTS_API_URL")),
+            client_id: env_or_build_trimmed(
+                "OS_ACCOUNTS_CLIENT_ID",
+                option_env!("OS_ACCOUNTS_CLIENT_ID"),
+            ),
             loopback_port: std::env::var("OS_ACCOUNTS_LOOPBACK_PORT")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -166,6 +169,15 @@ fn env_trimmed(key: &str) -> String {
     std::env::var(key)
         .map(|value| value.trim().to_string())
         .unwrap_or_default()
+}
+
+fn env_or_build_trimmed(key: &str, build_value: Option<&'static str>) -> String {
+    let runtime_value = env_trimmed(key);
+    if runtime_value.is_empty() {
+        build_value.map(str::trim).unwrap_or_default().to_string()
+    } else {
+        runtime_value
+    }
 }
 
 pub fn load_local_env() {

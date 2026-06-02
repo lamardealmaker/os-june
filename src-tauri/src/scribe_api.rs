@@ -399,6 +399,11 @@ fn scribe_api_url() -> String {
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            option_env!("SCRIBE_API_URL")
+                .map(|value| value.trim().trim_end_matches('/').to_string())
+                .filter(|value| !value.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_SCRIBE_API_URL.to_string())
 }
 
