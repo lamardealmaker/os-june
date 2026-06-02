@@ -2,6 +2,20 @@
 
 macOS-first Tauri MVP for local notes, reliable local audio recording, saved audio validation, batch transcription, and generated notes.
 
+[![Phala Trust Center — TEE verified](https://img.shields.io/badge/Phala%20Trust%20Center-TEE%20verified-success)](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c)
+
+## Privacy
+
+The `scribe-api` backend runs in an Intel TDX confidential VM on Phala Cloud. Because the running image is attested, neither Phala (the platform) nor Open Software (us) can quietly change it to read your audio, transcripts, or logs at runtime without that change being visible in the verification chain below:
+
+- **Source** — this repository. The exact commit running in production is stamped into the image's OCI `org.opencontainers.image.revision` label.
+- **Image** — built by [`build-scribe-api.yml`](.github/workflows/build-scribe-api.yml) and published to [`ghcr.io/open-software-network/scribe-api`](https://github.com/open-software-network/os-scribe/pkgs/container/scribe-api) as a plain single-arch image whose content digest is directly pullable. dstack cannot verify digest-pinned refs, so deploys pin an immutable per-commit tag (`:<sha>`); the digest each commit deploys is recorded in-repo as a signed `deploy/<env>/<sha>` git tag.
+- **Attestation** — the [Phala Trust Center report](https://trust.phala.com/app/15f8d2fd586da8b99c6082b3c2cba64127ceeb8c) is third-party-verifiable proof that the image digest above is what's actually running inside a real Intel TDX confidential VM.
+
+Together these bind the running image to a public commit: you can confirm the attested digest is the one our CI built and recorded for that commit. (Bit-for-bit *rebuild-from-source* reproducibility — so you can regenerate the digest yourself instead of trusting our CI — is in progress.)
+
+Audio still leaves the TEE when forwarded to OpenAI or Venice for transcription, under those providers' own privacy policies. This chain verifies the **code** running in the confidential VM, not what upstream providers do with audio. End-to-end private STT is a separate workstream.
+
 ## Development
 
 ```sh
