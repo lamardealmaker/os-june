@@ -118,12 +118,6 @@ pub struct HermesSessionMessagesRequest {
     pub session_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateHermesSessionRequest {
-    pub title: Option<String>,
-}
-
 #[tauri::command]
 pub async fn hermes_bridge_status(
     bridge: State<'_, HermesBridge>,
@@ -428,22 +422,6 @@ pub async fn hermes_bridge_session_messages(
             urlencoding::encode(&request.session_id)
         ),
         None,
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn create_hermes_bridge_session(
-    bridge: State<'_, HermesBridge>,
-    request: CreateHermesSessionRequest,
-) -> Result<serde_json::Value, AppError> {
-    hermes_api_json(
-        &bridge,
-        reqwest::Method::POST,
-        "/api/sessions",
-        Some(serde_json::json!({
-            "title": request.title,
-        })),
     )
     .await
 }

@@ -42,7 +42,6 @@ import {
   type AgentToolEventDto,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
-  type HermesSessionCreateResponse,
   type HermesSessionInfo,
   type HermesSessionMessage,
   type HermesSkillInfo,
@@ -50,7 +49,6 @@ import {
   type HermesBridgeStatus,
 } from "../../lib/tauri";
 import {
-  createHermesSession,
   listHermesSessionMessages,
   listHermesSessions,
   sessionTimestamp,
@@ -76,6 +74,11 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
 ]);
 
 type AgentPanel = "chat" | "skills" | "messaging";
+
+type HermesRuntimeSessionResponse = {
+  session_id?: string;
+  stored_session_id?: string;
+};
 
 export function AgentWorkspace() {
   const [tasks, setTasks] = useState<AgentTaskDto[]>([]);
@@ -113,6 +116,9 @@ export function AgentWorkspace() {
   const [workingSessionIds, setWorkingSessionIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [runtimeSessionIds, setRuntimeSessionIds] = useState<
+    Record<string, string>
+  >({});
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[] | null>(null);
   const [messagingPlatforms, setMessagingPlatforms] = useState<
@@ -350,23 +356,45 @@ export function AgentWorkspace() {
 
   async function submitHermesSession(content: string) {
     const gateway = await ensureHermesGateway();
-    const createdSession = selectedHermesSessionId
+    const created = selectedHermesSessionId
       ? undefined
-      : await createHermesSession(titleFromPrompt(content));
-    const sessionId = selectedHermesSessionId ?? createdSession?.id;
-    if (!sessionId) throw new Error("Hermes did not create a session.");
+      : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
+          title: titleFromPrompt(content),
+          cols: 96,
+        });
+    const storedSessionId =
+      selectedHermesSessionId ??
+      created?.stored_session_id ??
+      created?.session_id;
+    if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    const runtimeSessionId =
+      created?.session_id ??
+      runtimeSessionIds[storedSessionId] ??
+      (
+        await gateway.request<HermesRuntimeSessionResponse>("session.resume", {
+          session_id: storedSessionId,
+          cols: 96,
+        })
+      ).session_id;
+    if (!runtimeSessionId)
+      throw new Error("Hermes did not resume the session.");
     const createdAt = new Date().toISOString();
-    setSelectedHermesSessionId(sessionId);
+    setRuntimeSessionIds((current) => ({
+      ...current,
+      [storedSessionId]: runtimeSessionId,
+    }));
+    setSelectedHermesSessionId(storedSessionId);
     setSelectedTaskId(undefined);
     setHermesSessionItems((current) => {
-      if (current.some((session) => session.id === sessionId)) return current;
+      if (current.some((session) => session.id === storedSessionId))
+        return current;
       return [
         {
-          id: sessionId,
-          title: createdSession?.title ?? titleFromPrompt(content),
+          id: storedSessionId,
+          title: titleFromPrompt(content),
           preview: content,
-          started_at: createdSession?.started_at ?? createdAt,
-          last_active: createdSession?.last_active ?? createdAt,
+          started_at: createdAt,
+          last_active: createdAt,
           message_count: 1,
         },
         ...current,
@@ -374,8 +402,8 @@ export function AgentWorkspace() {
     });
     setPendingHermesMessages((current) => ({
       ...current,
-      [sessionId]: [
-        ...(current[sessionId] ?? []),
+      [storedSessionId]: [
+        ...(current[storedSessionId] ?? []),
         {
           id: `pending:user:${Date.now()}`,
           role: "user",
@@ -384,39 +412,43 @@ export function AgentWorkspace() {
         },
       ],
     }));
-    setSessionWorking(sessionId, true);
+    setSessionWorking(storedSessionId, true);
     const unlisten = gateway.onEvent((event) => {
-      if (event.session_id !== sessionId) return;
+      if (
+        event.session_id !== runtimeSessionId &&
+        event.session_id !== storedSessionId
+      )
+        return;
       const liveEvent = { ...event, receivedAt: new Date().toISOString() };
       const nextSessionEvents = [
-        ...(liveEventsRef.current[sessionId] ?? []),
+        ...(liveEventsRef.current[storedSessionId] ?? []),
         liveEvent,
       ].slice(-200);
       liveEventsRef.current = {
         ...liveEventsRef.current,
-        [sessionId]: nextSessionEvents,
+        [storedSessionId]: nextSessionEvents,
       };
       setLiveEvents(liveEventsRef.current);
       if (event.type === "message.complete") {
         unlisten();
-        setSessionWorking(sessionId, false);
+        setSessionWorking(storedSessionId, false);
         window.setTimeout(() => {
-          void refreshHermesSession(sessionId);
+          void refreshHermesSession(storedSessionId);
         }, 300);
       } else if (event.type === "error") {
         unlisten();
-        setSessionWorking(sessionId, false);
+        setSessionWorking(storedSessionId, false);
       }
     });
     try {
       await gateway.request("prompt.submit", {
-        session_id: sessionId,
+        session_id: runtimeSessionId,
         text: content,
       });
       await loadHermesSessions();
     } catch (err) {
       unlisten();
-      setSessionWorking(sessionId, false);
+      setSessionWorking(storedSessionId, false);
       throw err;
     }
   }
@@ -449,10 +481,13 @@ export function AgentWorkspace() {
       const sessionId =
         existingSessionId ??
         (
-          await gateway.request<HermesSessionCreateResponse>("session.create", {
-            title: task.title,
-            cols: 100,
-          })
+          await gateway.request<HermesRuntimeSessionResponse>(
+            "session.create",
+            {
+              title: task.title,
+              cols: 100,
+            },
+          )
         ).session_id;
       if (!sessionId) throw new Error("Hermes did not create a session.");
       setHermesSessions((prev) => ({ ...prev, [task.id]: sessionId }));

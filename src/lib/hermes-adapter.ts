@@ -1,5 +1,4 @@
 import {
-  createHermesBridgeSession,
   hermesBridgeSessionMessages,
   hermesBridgeSessions,
   type HermesSessionInfo,
@@ -34,15 +33,6 @@ export async function listHermesSessions(
 export async function listHermesSessionMessages(sessionId: string) {
   const response = await hermesBridgeSessionMessages(sessionId);
   return normalizeHermesSessionMessagesResponse(response);
-}
-
-export async function createHermesSession(title: string) {
-  const response = await createHermesBridgeSession({ title });
-  const session = response.session ?? response.data;
-  if (session?.id) return session;
-  const id = response.session_id ?? response.id;
-  if (id) return { id, title } satisfies HermesSessionInfo;
-  throw new Error("Hermes did not create a session.");
 }
 
 export function normalizeHermesSessionsResponse(
