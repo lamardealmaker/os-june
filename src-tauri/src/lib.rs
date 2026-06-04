@@ -68,6 +68,7 @@ pub fn run() {
             hermes_bridge::hermes_bridge_skills,
             hermes_bridge::hermes_bridge_toolsets,
             hermes_bridge::hermes_bridge_messaging_platforms,
+            hermes_bridge::hermes_bridge_filesystem_snapshot,
             hermes_bridge::hermes_bridge_sessions,
             hermes_bridge::hermes_bridge_session_messages,
             hermes_bridge::start_hermes_bridge,

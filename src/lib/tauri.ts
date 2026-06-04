@@ -343,6 +343,7 @@ export type HermesBridgeConnection = {
   port: number;
   command: string;
   hermesHome: string;
+  cwd?: string | null;
   providerProxyPort: number;
   pid: number;
 };
@@ -351,6 +352,27 @@ export type HermesBridgeStatus = {
   running: boolean;
   connection?: HermesBridgeConnection;
   message?: string;
+};
+
+export type HermesFilesystemEntry = {
+  name: string;
+  path: string;
+  kind: "directory" | "file" | string;
+  size?: number | null;
+  modifiedAt?: string | null;
+  children?: HermesFilesystemEntry[] | null;
+};
+
+export type HermesFilesystemRoot = {
+  id: string;
+  label: string;
+  path: string;
+  description: string;
+  entries: HermesFilesystemEntry[];
+};
+
+export type HermesFilesystemSnapshot = {
+  roots: HermesFilesystemRoot[];
 };
 
 export type HermesSkillInfo = {
@@ -706,6 +728,10 @@ export async function hermesBridgeMessagingPlatforms() {
   return invoke<HermesMessagingPlatformsResponse>(
     "hermes_bridge_messaging_platforms",
   );
+}
+
+export async function hermesBridgeFilesystemSnapshot() {
+  return invoke<HermesFilesystemSnapshot>("hermes_bridge_filesystem_snapshot");
 }
 
 export async function hermesBridgeSessions(

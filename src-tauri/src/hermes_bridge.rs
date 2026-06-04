@@ -2,9 +2,9 @@ use crate::domain::types::AppError;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
-    io,
+    fs, io,
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
     time::{Duration, Instant},
@@ -18,6 +18,8 @@ use tokio::{
 const READY_TIMEOUT: Duration = Duration::from_secs(45);
 const READY_POLL: Duration = Duration::from_millis(500);
 const SCRIBE_HERMES_COMMAND_ENV: &str = "SCRIBE_HERMES_COMMAND";
+const FILESYSTEM_MAX_DEPTH: usize = 2;
+const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
@@ -67,6 +69,7 @@ pub struct HermesBridgeConnection {
     pub port: u16,
     pub command: String,
     pub hermes_home: String,
+    pub cwd: Option<String>,
     pub provider_proxy_port: u16,
     pub pid: u32,
 }
@@ -116,6 +119,33 @@ pub struct HermesSessionsRequest {
 #[serde(rename_all = "camelCase")]
 pub struct HermesSessionMessagesRequest {
     pub session_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesFilesystemSnapshot {
+    pub roots: Vec<HermesFilesystemRoot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesFilesystemRoot {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+    pub description: String,
+    pub entries: Vec<HermesFilesystemEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HermesFilesystemEntry {
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+    pub size: Option<u64>,
+    pub modified_at: Option<String>,
+    pub children: Option<Vec<HermesFilesystemEntry>>,
 }
 
 #[tauri::command]
@@ -202,6 +232,7 @@ async fn start_hermes_bridge_inner(
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
+    let cwd_display = cwd.as_ref().map(|path| path.to_string_lossy().into_owned());
     let hermes_home = resolve_scribe_hermes_home(app)?;
     let provider_proxy = start_scribe_provider_proxy().await?;
     sync_hermes_config(&hermes_home, provider_proxy.port)?;
@@ -238,6 +269,7 @@ async fn start_hermes_bridge_inner(
         port,
         command,
         hermes_home: hermes_home.to_string_lossy().into_owned(),
+        cwd: cwd_display,
         provider_proxy_port: provider_proxy.port,
         pid,
     };
@@ -426,6 +458,43 @@ pub async fn hermes_bridge_session_messages(
     .await
 }
 
+#[tauri::command]
+pub async fn hermes_bridge_filesystem_snapshot(
+    app: AppHandle,
+    bridge: State<'_, HermesBridge>,
+) -> Result<HermesFilesystemSnapshot, AppError> {
+    let status = hermes_bridge_status(bridge).await?;
+    let connection = status.connection;
+    let hermes_home = connection
+        .as_ref()
+        .map(|item| PathBuf::from(&item.hermes_home))
+        .unwrap_or(resolve_scribe_hermes_home(&app)?);
+    let cwd = connection
+        .as_ref()
+        .and_then(|item| item.cwd.as_deref())
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+
+    let roots = filesystem_roots(&hermes_home, cwd.as_deref())?
+        .into_iter()
+        .filter_map(|root| {
+            if !root.path.exists() {
+                return None;
+            }
+            let entries = list_filesystem_entries(&root.path, 0).unwrap_or_default();
+            Some(HermesFilesystemRoot {
+                id: root.id,
+                label: root.label,
+                path: root.path.to_string_lossy().into_owned(),
+                description: root.description,
+                entries,
+            })
+        })
+        .collect();
+
+    Ok(HermesFilesystemSnapshot { roots })
+}
+
 pub fn shutdown(app: &tauri::AppHandle) {
     let bridge = app.state::<HermesBridge>();
     let _ = stop_hermes_bridge_inner(&bridge);
@@ -602,6 +671,167 @@ display:
     );
     std::fs::write(hermes_home.join("config.yaml"), config)
         .map_err(|error| AppError::new("hermes_bridge_config_failed", error.to_string()))
+}
+
+struct FilesystemRootCandidate {
+    id: String,
+    label: String,
+    path: PathBuf,
+    description: String,
+}
+
+fn filesystem_roots(
+    hermes_home: &Path,
+    cwd: Option<&Path>,
+) -> Result<Vec<FilesystemRootCandidate>, AppError> {
+    let mut roots = Vec::new();
+    if let Some(cwd) = cwd {
+        roots.push(FilesystemRootCandidate {
+            id: "cwd".to_string(),
+            label: "Working directory".to_string(),
+            path: cwd.to_path_buf(),
+            description: "The directory Hermes uses for local terminal and file tools.".to_string(),
+        });
+    }
+    roots.push(FilesystemRootCandidate {
+        id: "hermes-home".to_string(),
+        label: "Hermes home".to_string(),
+        path: hermes_home.to_path_buf(),
+        description: "Scribe's isolated Hermes runtime state.".to_string(),
+    });
+    for (id, label, relative, description) in [
+        (
+            "memory",
+            "Memory",
+            "memories",
+            "Persistent Hermes memory files and stores.",
+        ),
+        (
+            "skills",
+            "Skills",
+            "skills",
+            "Installed Hermes skills available to new sessions.",
+        ),
+        (
+            "sessions",
+            "Sessions",
+            "sessions",
+            "Filesystem-backed session metadata alongside the SQLite store.",
+        ),
+        (
+            "logs",
+            "Logs",
+            "logs",
+            "Runtime logs for Scribe's isolated Hermes process.",
+        ),
+        (
+            "cron",
+            "Scheduled jobs",
+            "cron",
+            "Hermes cron and scheduled automation files.",
+        ),
+    ] {
+        roots.push(FilesystemRootCandidate {
+            id: id.to_string(),
+            label: label.to_string(),
+            path: hermes_home.join(relative),
+            description: description.to_string(),
+        });
+    }
+    for filename in ["SOUL.md", "MEMORY.md", "USER.md", "state.db", "config.yaml"] {
+        let path = hermes_home.join(filename);
+        if path.exists() {
+            roots.push(FilesystemRootCandidate {
+                id: format!("file:{filename}"),
+                label: filename.to_string(),
+                path,
+                description: "Important Hermes runtime file.".to_string(),
+            });
+        }
+    }
+    Ok(dedupe_filesystem_roots(roots))
+}
+
+fn dedupe_filesystem_roots(roots: Vec<FilesystemRootCandidate>) -> Vec<FilesystemRootCandidate> {
+    let mut seen = std::collections::HashSet::new();
+    roots
+        .into_iter()
+        .filter(|root| {
+            let key = root.path.to_string_lossy().into_owned();
+            seen.insert(key)
+        })
+        .collect()
+}
+
+fn list_filesystem_entries(
+    path: &Path,
+    depth: usize,
+) -> Result<Vec<HermesFilesystemEntry>, AppError> {
+    if is_hidden_secret_path(path) {
+        return Ok(Vec::new());
+    }
+    if path.is_file() {
+        return filesystem_entry(path.to_path_buf(), depth).map(|entry| vec![entry]);
+    }
+    let mut entries = fs::read_dir(path)
+        .map_err(|error| AppError::new("hermes_filesystem_read_failed", error.to_string()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| !is_hidden_secret_path(&entry.path()))
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        let left_path = left.path();
+        let right_path = right.path();
+        right_path.is_dir().cmp(&left_path.is_dir()).then_with(|| {
+            left.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .cmp(&right.file_name().to_string_lossy().to_lowercase())
+        })
+    });
+    entries.truncate(FILESYSTEM_MAX_ENTRIES_PER_DIR);
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| filesystem_entry(entry.path(), depth).ok())
+        .collect())
+}
+
+fn filesystem_entry(path: PathBuf, depth: usize) -> Result<HermesFilesystemEntry, AppError> {
+    let metadata = fs::metadata(&path)
+        .map_err(|error| AppError::new("hermes_filesystem_read_failed", error.to_string()))?;
+    let is_dir = metadata.is_dir();
+    let children = if is_dir && depth < FILESYSTEM_MAX_DEPTH {
+        Some(list_filesystem_entries(&path, depth + 1)?)
+    } else {
+        None
+    };
+    Ok(HermesFilesystemEntry {
+        name: path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string_lossy().into_owned()),
+        path: path.to_string_lossy().into_owned(),
+        kind: if is_dir { "directory" } else { "file" }.to_string(),
+        size: if is_dir { None } else { Some(metadata.len()) },
+        modified_at: metadata.modified().ok().map(system_time_to_iso),
+        children,
+    })
+}
+
+fn is_hidden_secret_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    matches!(
+        name,
+        ".env" | "auth.lock" | ".credentials" | "credentials" | "secrets" | "secrets.json"
+    ) || name.ends_with(".lock")
+        || name.ends_with(".key")
+        || name.ends_with(".pem")
+}
+
+fn system_time_to_iso(value: std::time::SystemTime) -> String {
+    let datetime: chrono::DateTime<chrono::Utc> = value.into();
+    datetime.to_rfc3339()
 }
 
 fn yaml_string(value: &str) -> String {

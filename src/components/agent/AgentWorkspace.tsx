@@ -1,6 +1,9 @@
 import {
   BotIcon,
   CircleStopIcon,
+  FileIcon,
+  FolderIcon,
+  FolderTreeIcon,
   MessageSquareIcon,
   RotateCwIcon,
   SendIcon,
@@ -9,6 +12,7 @@ import {
   WrenchIcon,
 } from "lucide-react";
 import {
+  type CSSProperties,
   type FormEvent,
   type ReactNode,
   useCallback,
@@ -23,6 +27,7 @@ import {
   cancelAgentTask,
   createAgentTask,
   getAgentTask,
+  hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
   hermesBridgeSkills,
   hermesBridgeStatus,
@@ -40,13 +45,15 @@ import {
   type AgentTaskDto,
   type AgentTaskStatus,
   type AgentToolEventDto,
+  type HermesBridgeStatus,
+  type HermesFilesystemEntry,
+  type HermesFilesystemSnapshot,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
   type HermesSessionInfo,
   type HermesSessionMessage,
   type HermesSkillInfo,
   type HermesToolsetInfo,
-  type HermesBridgeStatus,
 } from "../../lib/tauri";
 import {
   listHermesSessionMessages,
@@ -73,7 +80,7 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "waitingForUser",
 ]);
 
-type AgentPanel = "chat" | "skills" | "messaging";
+type AgentPanel = "chat" | "skills" | "messaging" | "files";
 
 type HermesRuntimeSessionResponse = {
   session_id?: string;
@@ -132,6 +139,9 @@ export function AgentWorkspace() {
   const [messagingEnvEdits, setMessagingEnvEdits] = useState<
     Record<string, string>
   >({});
+  const [filesystemSnapshot, setFilesystemSnapshot] =
+    useState<HermesFilesystemSnapshot | null>(null);
+  const [filesystemLoading, setFilesystemLoading] = useState(false);
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
@@ -334,6 +344,9 @@ export function AgentWorkspace() {
     }
     if (activePanel === "messaging" && !messagingPlatforms) {
       void loadMessagingPlatforms();
+    }
+    if (activePanel === "files" && !filesystemSnapshot) {
+      void loadFilesystemSnapshot();
     }
   }, [activePanel]);
 
@@ -625,6 +638,19 @@ export function AgentWorkspace() {
     }
   }
 
+  async function loadFilesystemSnapshot() {
+    setFilesystemLoading(true);
+    try {
+      await ensureHermesGateway();
+      setFilesystemSnapshot(await hermesBridgeFilesystemSnapshot());
+      setError(null);
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setFilesystemLoading(false);
+    }
+  }
+
   async function setSkillEnabled(skill: HermesSkillInfo, enabled: boolean) {
     setCapabilitySaving(`skill:${skill.name}`);
     try {
@@ -750,6 +776,14 @@ export function AgentWorkspace() {
         onToggle={(platform, enabled) =>
           void setMessagingPlatformEnabled(platform, enabled)
         }
+      />
+    ) : activePanel === "files" ? (
+      <FilesystemPanel
+        loading={filesystemLoading}
+        query={capabilityQuery}
+        snapshot={filesystemSnapshot}
+        onQueryChange={setCapabilityQuery}
+        onRefresh={() => void loadFilesystemSnapshot()}
       />
     ) : null;
 
@@ -1289,6 +1323,14 @@ function PanelTabs({
         <MessageSquareIcon size={14} />
         Messaging
       </button>
+      <button
+        type="button"
+        aria-selected={activePanel === "files"}
+        onClick={() => onChange("files")}
+      >
+        <FolderTreeIcon size={14} />
+        Files
+      </button>
     </div>
   );
 }
@@ -1481,6 +1523,125 @@ function MessagingPanel({
         </div>
       )}
     </section>
+  );
+}
+
+function FilesystemPanel({
+  loading,
+  query,
+  snapshot,
+  onQueryChange,
+  onRefresh,
+}: {
+  loading: boolean;
+  query: string;
+  snapshot: HermesFilesystemSnapshot | null;
+  onQueryChange: (query: string) => void;
+  onRefresh: () => void;
+}) {
+  const q = query.trim().toLowerCase();
+  const roots = (snapshot?.roots ?? [])
+    .map((root) => ({
+      ...root,
+      entries: filterFilesystemEntries(root.entries, q),
+    }))
+    .filter(
+      (root) =>
+        !q ||
+        includesQuery(root.label, q) ||
+        includesQuery(root.path, q) ||
+        root.entries.length > 0,
+    );
+
+  return (
+    <section className="agent-management-panel" aria-label="Agent filesystem">
+      <ManagementToolbar
+        loading={loading}
+        placeholder="Search files, memory, skills"
+        query={query}
+        onQueryChange={onQueryChange}
+        onRefresh={onRefresh}
+      />
+      {loading && !snapshot ? (
+        <div className="agent-loading">
+          <Spinner size={16} />
+        </div>
+      ) : roots.length ? (
+        <div className="agent-management-scroll">
+          {roots.map((root) => (
+            <section key={root.id} className="agent-files-root">
+              <header>
+                <div>
+                  <h3>{root.label}</h3>
+                  <p>{root.description}</p>
+                </div>
+                <code>{compactPath(root.path)}</code>
+              </header>
+              {root.entries.length ? (
+                <div className="agent-files-tree">
+                  {root.entries.map((entry) => (
+                    <FilesystemEntryRow
+                      key={entry.path}
+                      entry={entry}
+                      level={0}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="agent-capability-empty">No visible entries</p>
+              )}
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="agent-loading">
+          <EmptyState
+            icon={<FolderTreeIcon size={24} />}
+            title="No files"
+            description="No matching agent files were found."
+          />
+        </div>
+      )}
+    </section>
+  );
+}
+
+function FilesystemEntryRow({
+  entry,
+  level,
+}: {
+  entry: HermesFilesystemEntry;
+  level: number;
+}) {
+  const isDirectory = entry.kind === "directory";
+  const children = entry.children ?? [];
+  return (
+    <div className="agent-files-entry-group">
+      <div
+        className="agent-files-entry"
+        style={{ "--agent-file-depth": level } as CSSProperties}
+      >
+        <span className="agent-files-entry-icon" aria-hidden="true">
+          {isDirectory ? <FolderIcon size={14} /> : <FileIcon size={14} />}
+        </span>
+        <span className="agent-files-entry-name">{entry.name}</span>
+        <span className="agent-files-entry-meta">
+          {isDirectory ? "Folder" : formatBytes(entry.size)}
+          {entry.modifiedAt ? ` · ${relativeDate(entry.modifiedAt)}` : ""}
+        </span>
+      </div>
+      {children.length ? (
+        <div className="agent-files-children">
+          {children.map((child) => (
+            <FilesystemEntryRow
+              key={child.path}
+              entry={child}
+              level={level + 1}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -2211,6 +2372,44 @@ function capabilityMatches(
     values.push(...item.tools);
   }
   return values.some((value) => safeText(value).toLowerCase().includes(query));
+}
+
+function filterFilesystemEntries(
+  entries: HermesFilesystemEntry[],
+  query: string,
+): HermesFilesystemEntry[] {
+  if (!query) return entries;
+  return entries.flatMap((entry) => {
+    const children = filterFilesystemEntries(entry.children ?? [], query);
+    if (
+      includesQuery(entry.name, query) ||
+      includesQuery(entry.path, query) ||
+      children.length
+    ) {
+      return [{ ...entry, children }];
+    }
+    return [];
+  });
+}
+
+function includesQuery(value: unknown, query: string) {
+  return safeText(value).toLowerCase().includes(query);
+}
+
+function compactPath(path: string) {
+  return path.replace(/^\/Users\/[^/]+/, "~");
+}
+
+function formatBytes(value: number | null | undefined) {
+  if (!value) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
 }
 
 function safeText(value: unknown) {

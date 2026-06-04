@@ -417,7 +417,7 @@ input:focus-visible,
 
 .agent-rail-header .agent-panel-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   width: 100%;
 }
 
@@ -597,6 +597,94 @@ input:focus-visible,
   color: var(--muted-foreground);
   font-size: var(--fs-sm);
   line-height: 1.35;
+}
+
+.agent-files-root {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-sm);
+  background: var(--surface-subtle);
+  overflow: hidden;
+}
+
+.agent-files-root + .agent-files-root {
+  margin-top: var(--sp-4);
+}
+
+.agent-files-root > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-4);
+  padding: var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--card);
+}
+
+.agent-files-root h3 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.agent-files-root p {
+  margin: var(--sp-1) 0 0;
+  color: var(--muted-foreground);
+  font-size: var(--fs-sm);
+  line-height: 1.35;
+}
+
+.agent-files-root code {
+  max-width: 44%;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-xs);
+  padding: 2px var(--sp-2);
+  background: var(--background);
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-files-tree {
+  padding: var(--sp-2) 0;
+}
+
+.agent-files-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 30px;
+  padding: 0 var(--sp-3);
+  padding-left: calc(var(--sp-3) + var(--agent-file-depth, 0) * 18px);
+  color: var(--foreground);
+  font-size: var(--fs-sm);
+}
+
+.agent-files-entry:hover {
+  background: var(--card);
+}
+
+.agent-files-entry-icon {
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
+
+.agent-files-entry-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-files-entry-meta {
+  color: var(--muted-foreground);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
 }
 
 .agent-env-list {
