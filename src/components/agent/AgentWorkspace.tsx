@@ -625,7 +625,15 @@ export function AgentWorkspace() {
       });
       setError(null);
     } catch (err) {
-      setError(messageFromError(err));
+      const message = messageFromError(err);
+      if (message.toLowerCase().includes("session not found")) {
+        setWorkingTaskIds(new Set());
+        setWorkingSessionIds(new Set());
+        liveEventsRef.current = {};
+        setLiveEvents({});
+        void loadHermesSessions();
+      }
+      setError(message);
     } finally {
       setApprovalSubmitting((current) => {
         const next = { ...current };
@@ -992,10 +1000,10 @@ export function AgentWorkspace() {
                     key={turn.id}
                     turn={turn}
                     approvalSubmitting={approvalSubmitting}
-                    onApproval={(requestId, choice) =>
+                    onApproval={(part, choice) =>
                       void respondToApproval(
-                        selectedHermesSessionId,
-                        requestId,
+                        part.sessionId ?? selectedHermesSessionId,
+                        part.id,
                         choice,
                       )
                     }
@@ -1054,12 +1062,13 @@ export function AgentWorkspace() {
                     key={turn.id}
                     turn={turn}
                     approvalSubmitting={approvalSubmitting}
-                    onApproval={(requestId, choice) => {
+                    onApproval={(part, choice) => {
                       const sessionId =
+                        part.sessionId ??
                         selectedTask.hermesSessionId ??
                         hermesSessions[selectedTask.id];
                       if (!sessionId) return;
-                      void respondToApproval(sessionId, requestId, choice);
+                      void respondToApproval(sessionId, part.id, choice);
                     }}
                   />
                 ))}
@@ -2014,7 +2023,10 @@ function AgentChatTurnRow({
   turn,
 }: {
   approvalSubmitting: Record<string, string>;
-  onApproval: (requestId: string, choice: ApprovalChoice) => void;
+  onApproval: (
+    part: Extract<AgentChatPart, { type: "approval" }>,
+    choice: ApprovalChoice,
+  ) => void;
   turn: AgentChatTurn;
 }) {
   const textParts = turn.parts.filter(
@@ -2079,7 +2091,10 @@ function ApprovalPart({
   part,
   submitting,
 }: {
-  onApproval: (requestId: string, choice: ApprovalChoice) => void;
+  onApproval: (
+    part: Extract<AgentChatPart, { type: "approval" }>,
+    choice: ApprovalChoice,
+  ) => void;
   part: Extract<AgentChatPart, { type: "approval" }>;
   submitting?: string;
 }) {
@@ -2102,7 +2117,7 @@ function ApprovalPart({
           <button
             type="button"
             disabled={disabled}
-            onClick={() => onApproval(part.id, "once")}
+            onClick={() => onApproval(part, "once")}
           >
             <CheckIcon size={14} />
             {submitting === "once" ? "Approving" : "Approve once"}
@@ -2110,7 +2125,7 @@ function ApprovalPart({
           <button
             type="button"
             disabled={disabled}
-            onClick={() => onApproval(part.id, "session")}
+            onClick={() => onApproval(part, "session")}
           >
             <CheckIcon size={14} />
             {submitting === "session" ? "Approving" : "This session"}
@@ -2119,7 +2134,7 @@ function ApprovalPart({
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onApproval(part.id, "always")}
+              onClick={() => onApproval(part, "always")}
             >
               <CheckIcon size={14} />
               {submitting === "always" ? "Approving" : "Always"}
@@ -2128,7 +2143,7 @@ function ApprovalPart({
           <button
             type="button"
             disabled={disabled}
-            onClick={() => onApproval(part.id, "deny")}
+            onClick={() => onApproval(part, "deny")}
           >
             <XIcon size={14} />
             {submitting === "deny" ? "Denying" : "Deny"}

@@ -33,6 +33,7 @@ export type AgentChatToolPart = {
 export type AgentChatApprovalPart = {
   type: "approval";
   id: string;
+  sessionId?: string;
   command: string;
   description: string;
   allowPermanent: boolean;
@@ -271,6 +272,7 @@ function appendLiveHermesEvents(
         description:
           stringValue(payload?.description, true) ??
           "Hermes needs approval before continuing.",
+        sessionId: event.session_id,
         allowPermanent: payload?.allow_permanent !== false,
         status: "pending",
       });
@@ -404,7 +406,7 @@ function upsertApprovalPart(
   next: Pick<
     AgentChatApprovalPart,
     "id" | "command" | "description" | "allowPermanent" | "status"
-  >,
+  > & { sessionId?: string },
 ) {
   const existing = parts.find(
     (part): part is AgentChatApprovalPart =>
@@ -413,6 +415,7 @@ function upsertApprovalPart(
   if (existing) {
     existing.command = next.command || existing.command;
     existing.description = next.description || existing.description;
+    existing.sessionId = next.sessionId || existing.sessionId;
     existing.allowPermanent = next.allowPermanent;
     existing.status = next.status;
     return;
@@ -420,6 +423,7 @@ function upsertApprovalPart(
   parts.push({
     type: "approval",
     id: next.id,
+    sessionId: next.sessionId,
     command: next.command,
     description: next.description,
     allowPermanent: next.allowPermanent,
