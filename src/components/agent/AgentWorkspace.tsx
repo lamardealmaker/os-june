@@ -873,18 +873,6 @@ export function AgentWorkspace() {
                   </h2>
                 </div>
               </div>
-              <div className="agent-actions">
-                <button
-                  type="button"
-                  className="agent-icon-button"
-                  aria-label="Refresh session"
-                  onClick={() =>
-                    void refreshHermesSession(selectedHermesSessionId)
-                  }
-                >
-                  <RotateCwIcon size={15} />
-                </button>
-              </div>
             </header>
             <div ref={listRef} className="agent-timeline">
               <SafetyPanel />
