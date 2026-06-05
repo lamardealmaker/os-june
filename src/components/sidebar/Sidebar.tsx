@@ -241,18 +241,6 @@ export function Sidebar({
           </span>
           <span className="sidebar-nav-label">Dictation</span>
         </button>
-        <button
-          type="button"
-          className="sidebar-nav-item"
-          data-active={activeView === "agent"}
-          aria-current={activeView === "agent" ? "page" : undefined}
-          onClick={() => onChangeView("agent")}
-        >
-          <span className="sidebar-nav-icon">
-            <BotIcon size={16} />
-          </span>
-          <span className="sidebar-nav-label">Agent</span>
-        </button>
       </nav>
 
       <section
