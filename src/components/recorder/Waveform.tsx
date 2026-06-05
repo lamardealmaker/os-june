@@ -12,7 +12,7 @@ import {
   RECORDER_BAR_COUNT,
   RECORDER_BAR_HISTORY_OFFSETS,
   RECORDER_BAR_WEIGHTS,
-  withIdleCarrier,
+  withWaveLayers,
 } from "../../lib/audio-meter";
 
 type WaveformProps = {
@@ -32,6 +32,11 @@ const LOW_LIFT = 0.6;
 // Soft-knee steepness — loud speech approaches the ceiling asymptotically
 // instead of slamming flat. Higher reaches the ceiling sooner.
 const KNEE = 6;
+// How many of the freshest `recentPeaks` to coalesce per poll — sized to ~the
+// 50ms poll window at the default audio buffer (~11ms/callback ≈ 4–5 peaks, +1
+// headroom for smaller buffers). Deliberately a short window, not the full
+// deque, so the bars die down immediately. See the push effect below.
+const POLL_WINDOW_PEAKS = 6;
 
 export function Waveform({ level, active = true }: WaveformProps) {
   const refs = useRef<Array<HTMLSpanElement | null>>([]);
@@ -54,9 +59,17 @@ export function Waveform({ level, active = true }: WaveformProps) {
   // history ring to advance each poll). The rAF loop animates the bars toward
   // it (fast attack, smooth release, snap-to-zero on silence).
   useEffect(() => {
+    // Model the HUD's signal: coalesce the peak over roughly the poll window so
+    // transients between polls aren't missed. `recentPeaks` is a fixed ~24-entry
+    // deque (~260ms at the default audio buffer), NOT the poll window — maxing
+    // the whole thing would reintroduce a long peak-hold and a mushy die-down,
+    // so we max only the freshest few entries (~the 50ms poll at typical buffer
+    // sizes). The cumulative `peak` is a since-start max (frozen), so it's only
+    // the empty-history fallback.
+    const recent = level.recentPeaks;
     const raw =
-      level.recentPeaks.length > 0
-        ? level.recentPeaks[level.recentPeaks.length - 1]
+      recent.length > 0
+        ? Math.max(...recent.slice(-POLL_WINDOW_PEAKS))
         : level.peak;
     meterRef.current.pushLevel(visualPeakScale(raw));
   }, [level]);
@@ -66,11 +79,15 @@ export function Waveform({ level, active = true }: WaveformProps) {
     let raf = 0;
     const tick = (now: number) => {
       meter.step();
+      let speech = 0;
+      for (let i = 0; i < RECORDER_BAR_COUNT; i++) {
+        speech = Math.max(speech, meter.displayed[i]);
+      }
       for (let i = 0; i < RECORDER_BAR_COUNT; i++) {
         const el = refs.current[i];
         if (!el) continue;
         const value = activeRef.current
-          ? withIdleCarrier(meter.displayed[i], i, now)
+          ? withWaveLayers(meter.displayed[i], i, now, speech, RECORDER_BAR_COUNT)
           : meter.displayed[i];
         el.style.setProperty("--level", value.toFixed(3));
       }

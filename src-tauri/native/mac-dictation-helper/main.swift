@@ -954,11 +954,11 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     // far faster than that (faster still for aggregate "system + mic" devices),
     // so emitting one event per buffer floods the IPC channel — the HUD's event
     // queue grows unbounded over a long recording until the waveform visibly
-    // lags and then freezes. Track the peak across skipped buffers so loud
+    // lags and then freezes. Track the max level across skipped buffers so loud
     // transients still register. All accesses happen on `queue` (the capture
     // delegate queue), so no locking is needed.
     private var lastLevelEmit: TimeInterval = 0
-    private var pendingPeak: Float = 0
+    private var pendingLevel: Float = 0
     private let levelEmitInterval: TimeInterval = 0.04
 
     init(
@@ -1090,18 +1090,68 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
         ) == noErr, let dataPointer, length > 1 else {
             return
         }
-        let sampleCount = length / MemoryLayout<Int16>.size
+
+        // Detect the actual sample format. AVCaptureAudioDataOutput on macOS
+        // commonly delivers 32-bit FLOAT, not Int16 — reading float bytes as Int16
+        // yields a constant garbage level (frozen bars). Branch on the stream's
+        // real format so the meter is correct for whatever the device delivers.
+        var isFloat = false
+        var bitsPerChannel = 16
+        if let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee {
+            isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+            if asbd.mBitsPerChannel > 0 {
+                bitsPerChannel = Int(asbd.mBitsPerChannel)
+            }
+        }
+
+        var sumSquares: Float = 0
+        var peak: Float = 0
+        var sampleCount = 0
+        if isFloat && bitsPerChannel == 32 {
+            sampleCount = length / MemoryLayout<Float32>.size
+            dataPointer.withMemoryRebound(to: Float32.self, capacity: sampleCount) { pointer in
+                for index in 0..<sampleCount {
+                    let value = pointer[index]
+                    sumSquares += value * value
+                    peak = max(peak, abs(value))
+                }
+            }
+        } else if !isFloat && bitsPerChannel == 16 {
+            sampleCount = length / MemoryLayout<Int16>.size
+            dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
+                for index in 0..<sampleCount {
+                    let value = Float(pointer[index]) / Float(Int16.max)
+                    sumSquares += value * value
+                    peak = max(peak, abs(value))
+                }
+            }
+        } else if !isFloat && bitsPerChannel == 32 {
+            sampleCount = length / MemoryLayout<Int32>.size
+            dataPointer.withMemoryRebound(to: Int32.self, capacity: sampleCount) { pointer in
+                for index in 0..<sampleCount {
+                    let value = Float(pointer[index]) / Float(Int32.max)
+                    sumSquares += value * value
+                    peak = max(peak, abs(value))
+                }
+            }
+        } else {
+            // Unhandled format (e.g. packed 24-bit): the Int16 path would misread
+            // the stride and systematically underread, leaving the HUD quieter
+            // than reality. Skip this buffer rather than emit a wrong level.
+            return
+        }
         guard sampleCount > 0 else {
             return
         }
-        let samples = dataPointer.withMemoryRebound(to: Int16.self, capacity: sampleCount) { pointer in
-            UnsafeBufferPointer(start: pointer, count: sampleCount)
-        }
-        var peak: Float = 0
-        for sample in samples {
-            peak = max(peak, abs(Float(sample) / Float(Int16.max)))
-        }
-        pendingPeak = max(pendingPeak, peak)
+        let rms = sqrt(sumSquares / Float(sampleCount))
+        // Peak-biased blend (0.8·peak + 0.2·rms) on a correctly-read, no-peak-hold
+        // signal so the HUD rises AND dies down immediately. Coalesced by max into
+        // the pending level so transients between emit ticks aren't missed, then
+        // emitted at the interval / flushed on stop — emitting per buffer floods
+        // the IPC channel and grew the HUD event queue until the waveform froze.
+        let level = min(1, peak * 0.8 + rms * 0.2)
+        pendingLevel = max(pendingLevel, level)
         let now = ProcessInfo.processInfo.systemUptime
         guard now - lastLevelEmit >= levelEmitInterval else {
             return
@@ -1110,7 +1160,7 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
     }
 
     private func flushPendingLevel() {
-        guard pendingPeak > 0 else {
+        guard pendingLevel > 0 else {
             return
         }
         emitPendingLevel(at: ProcessInfo.processInfo.systemUptime)
@@ -1118,8 +1168,8 @@ final class SelectedDeviceRecorder: NSObject, AVCaptureAudioDataOutputSampleBuff
 
     private func emitPendingLevel(at now: TimeInterval) {
         lastLevelEmit = now
-        let coalesced = pendingPeak
-        pendingPeak = 0
+        let coalesced = pendingLevel
+        pendingLevel = 0
         levelHandler(coalesced)
     }
 
@@ -1268,8 +1318,15 @@ final class DictationController {
         resetRecordingState()
 
         let nextRecordingURL = temporaryRecordingURL()
-        if let selectedDevice = microphoneDevice(for: preferredMicrophoneID) {
-            startSelectedDeviceRecording(device: selectedDevice, url: nextRecordingURL)
+        // Auto-detect now resolves to the system default input and records through
+        // the same low-latency capture path as a manually-selected mic, so it's
+        // just as snappy (instantaneous peak, accurate die-down). The
+        // AVAudioRecorder path below is only a fallback for when no capture device
+        // is available at all.
+        let captureDevice =
+            microphoneDevice(for: preferredMicrophoneID) ?? AVCaptureDevice.default(for: .audio)
+        if let captureDevice {
+            startSelectedDeviceRecording(device: captureDevice, url: nextRecordingURL)
             return
         }
 
@@ -1371,9 +1428,10 @@ final class DictationController {
 
     private func startMetering() {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.main)
-        // 25Hz audio-level emit rate: keeps the HUD's bars feeling reactive
-        // to voice without flooding the IPC channel.
-        timer.schedule(deadline: .now(), repeating: .milliseconds(40))
+        // 50Hz (20ms) emit rate: a fresh level roughly every rAF frame so the
+        // bars track speech without the steppiness of the old 40ms cadence.
+        // Tiny JSON lines, so the IPC channel handles it comfortably.
+        timer.schedule(deadline: .now(), repeating: .milliseconds(20))
         timer.setEventHandler { [weak self] in
             self?.emitAudioRecorderLevel()
         }
@@ -1387,9 +1445,16 @@ final class DictationController {
         }
 
         audioRecorder.updateMeters()
-        let averagePower = max(audioRecorder.averagePower(forChannel: 0), -80)
-        let level = Float(pow(10.0, Double(averagePower) / 20.0))
-        observeAudioLevel(level)
+        // averagePower is heavily time-smoothed — it reads dead under speech and
+        // is why production never shimmered like the playground. peakPower tracks
+        // per-syllable dynamics; bias hard toward it and keep a little average so
+        // the floor between syllables doesn't flicker.
+        let peakDb = max(audioRecorder.peakPower(forChannel: 0), -80)
+        let averageDb = max(audioRecorder.averagePower(forChannel: 0), -80)
+        let peak = Float(pow(10.0, Double(peakDb) / 20.0))
+        let average = Float(pow(10.0, Double(averageDb) / 20.0))
+        let level = peak * 0.8 + average * 0.2
+        observeAudioLevel(min(1, level))
     }
 
     private func observeAudioLevel(_ level: Float) {

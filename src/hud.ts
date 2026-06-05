@@ -7,10 +7,10 @@ import {
   createBarMeter,
   HUD_BAR_HISTORY_OFFSETS,
   HUD_BAR_WEIGHTS,
-  IDLE_CARRIER_AMP,
+  IDLE_PULSE_AMP,
   IDLE_LEVEL,
   LIVE_WAVE_OPTIONS,
-  withIdleCarrier,
+  withWaveLayers,
 } from "./lib/audio-meter";
 import "./styles/hud.css";
 
@@ -65,14 +65,14 @@ const IDLE_RAF_TIMEOUT_MS = 260;
 // CPU at 60fps compositing — the carrier (a 0.45Hz sine) reads smooth either
 // way. Full rAF resumes the moment audio or bar motion returns.
 const SHIMMER_FRAME_MS = 33;
-// Nudged 0.008→0.01 (2026-06-04) so quiet room ambient stays in the (now
-// heavily damped) ambient regime — real speech still clears it into the voice
-// path + whisper floor, but room tone no longer crosses over and lights bars.
-const AUDIO_NOISE_GATE = 0.01;
-// Raised 16→28 (2026-06-04) so the sqrt curve saturates at a much quieter input
-// — a whisper now fills the bars nearly as much as a shout (Wispr-Flow-style
-// compression, where bar height reads "voice present" more than "how loud").
-const AUDIO_VISUAL_GAIN = 28;
+// The helper ships a peak-biased level (0.8·peak + 0.2·avg). These shaping
+// constants mirror the playground's TUNED set exactly (AUDIO source "blend") so
+// the HUD reads identically to the tuning tool.
+const AUDIO_NOISE_GATE = 0.02;
+// Gain 5 leaves dynamic range in the curve so the centre bounces between quiet
+// and loud instead of slamming the ceiling. Whisper visibility comes from the
+// (low) HUD_WHISPER_FLOOR below, not from the gain.
+const AUDIO_VISUAL_GAIN = 5;
 // Ambient floor damped hard (gain 4→3, ceiling 0.11→0.03) so a quiet room rests
 // the bars near zero — the carrier wave, not room tone, is the idle "we're
 // listening" signal. The old 0.11 ceiling pegged the baseline and buried the
@@ -82,11 +82,13 @@ const AMBIENT_VISUAL_GAIN = 3;
 const AMBIENT_MAX_LEVEL = 0.03;
 
 // Whisper floor: once voice clears the gate, lift it off the baseline so even
-// quiet speech reads tall. Voice-gated (see renderAudioLevel) — ambient/silence
-// stays below the gate and still collapses the bars to zero.
-const HUD_WHISPER_FLOOR = 0.2;
-// The always-on idle carrier wave lives in the shared meter (IDLE_CARRIER_*) so
-// the HUD and recorder shimmer identically.
+// quiet speech reads. Voice-gated (see renderAudioLevel) — ambient/silence stays
+// below the gate and still collapses the bars to zero. Kept low (0.06, matching
+// the playground) so the centre drops back toward flat between syllables and
+// bounces, instead of pegging continuously tall.
+const HUD_WHISPER_FLOOR = 0.06;
+// The idle pulse + speech wave live in the shared meter (IDLE_PULSE_*,
+// SPEECH_WAVE_*, withWaveLayers) so the HUD and recorder move identically.
 
 function setHud(state: string, status: string) {
   if (!hud || !statusText) return;
@@ -129,16 +131,21 @@ function startBarLoop() {
   const tick = (now: number) => {
     rafHandle = undefined;
     const stillAnimating = meter.step();
+    // Overall loudness = the tallest bar right now; drives the speech wave.
+    let speech = 0;
     for (let i = 0; i < bars.length; i++) {
-      const level = withIdleCarrier(meter.displayed[i], i, now);
+      speech = Math.max(speech, meter.displayed[i]);
+    }
+    for (let i = 0; i < bars.length; i++) {
+      const level = withWaveLayers(meter.displayed[i], i, now, speech, bars.length);
       bars[i].style.setProperty("--level", level.toFixed(3));
     }
     const sinceAudio = performance.now() - lastAudioLevelAt;
     const reactive = stillAnimating || sinceAudio < IDLE_RAF_TIMEOUT_MS;
-    // Once the carrier wave is on, keep animating for as long as we're listening
-    // so the shimmer never freezes.
+    // Once the idle pulse is on, keep animating for as long as we're listening
+    // so the travelling pulse never freezes.
     const keepShimmering =
-      IDLE_CARRIER_AMP > 0 && hud?.dataset.state === "listening";
+      IDLE_PULSE_AMP > 0 && hud?.dataset.state === "listening";
     if (reactive) {
       // Bars moving or audio recent → paint every frame for responsiveness.
       rafHandle = window.requestAnimationFrame(tick);
@@ -287,6 +294,21 @@ async function handleDictationEventPayload(payload: unknown) {
   }
 
   if (dictationEvent.type === "audio_level") {
+    // The helper flushes a final coalesced level when the recorder stops, which
+    // arrives AFTER finalizing_transcript. Once we've moved past listening, that
+    // stray level must NOT pull the HUD back to "listening" — otherwise it kills
+    // the transcribing braille and the pill looks stuck until the paste lands.
+    const state = hud?.dataset.state;
+    if (
+      state === "idle" ||
+      state === "transcribing" ||
+      state === "pasting" ||
+      state === "error" ||
+      state === "silent-error" ||
+      state === "exiting"
+    ) {
+      return;
+    }
     const level = Number(dictationEvent.payload?.level || 0);
     renderAudioLevel(level);
     setHud("listening", "Listening");
