@@ -82,7 +82,21 @@ const POLLED_STATUSES = new Set<AgentTaskStatus>([
   "waitingForUser",
 ]);
 
-type AgentPanel = "chat" | "skills" | "messaging" | "files";
+type AgentPanel = "chat" | "skills" | "messaging";
+
+export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
+export const AGENT_SELECT_SESSION_EVENT = "scribe:agent:select-session";
+export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
+
+export type AgentSessionsChangedDetail = {
+  sessions: HermesSessionInfo[];
+  selectedSessionId?: string;
+  workingSessionIds: string[];
+};
+
+type AgentSelectSessionDetail = {
+  sessionId: string;
+};
 
 type HermesRuntimeSessionResponse = {
   session_id?: string;
@@ -258,6 +272,45 @@ export function AgentWorkspace() {
   }, [bridge.running, loadHermesSessions]);
 
   useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent<AgentSessionsChangedDetail>(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        {
+          detail: {
+            sessions: hermesSessionItems,
+            selectedSessionId: selectedHermesSessionId,
+            workingSessionIds: Array.from(workingSessionIds),
+          },
+        },
+      ),
+    );
+  }, [hermesSessionItems, selectedHermesSessionId, workingSessionIds]);
+
+  useEffect(() => {
+    function handleNewSession() {
+      void startNewTask();
+    }
+
+    function handleSelectSession(event: Event) {
+      const detail = (event as CustomEvent<AgentSelectSessionDetail>).detail;
+      if (!detail?.sessionId) return;
+      setActivePanel("chat");
+      setSelectedHermesSessionId(detail.sessionId);
+      setSelectedTaskId(undefined);
+    }
+
+    window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
+    window.addEventListener(AGENT_SELECT_SESSION_EVENT, handleSelectSession);
+    return () => {
+      window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
+      window.removeEventListener(
+        AGENT_SELECT_SESSION_EVENT,
+        handleSelectSession,
+      );
+    };
+  }, []);
+
+  useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
     let cancelled = false;
     listHermesSessionMessages(selectedHermesSessionId)
@@ -374,9 +427,6 @@ export function AgentWorkspace() {
     }
     if (activePanel === "messaging" && !messagingPlatforms) {
       void loadMessagingPlatforms();
-    }
-    if (activePanel === "files" && !filesystemSnapshot) {
-      void loadFilesystemSnapshot();
     }
   }, [activePanel]);
 
@@ -843,247 +893,197 @@ export function AgentWorkspace() {
           void setMessagingPlatformEnabled(platform, enabled)
         }
       />
-    ) : activePanel === "files" ? (
-      <FilesystemPanel
-        loading={filesystemLoading}
-        query={capabilityQuery}
-        snapshot={filesystemSnapshot}
-        onQueryChange={setCapabilityQuery}
-        onRefresh={() => void loadFilesystemSnapshot()}
-      />
     ) : null;
 
   return (
     <section className="agent-workspace" aria-label="Agent">
-      <aside className="agent-task-rail" aria-label="Agent tasks">
-        <header className="agent-rail-header">
-          <div>
-            <h1>Agent</h1>
-            <p>
-              {bridge.running
-                ? `Hermes bridge running on ${bridge.connection?.port ?? "local"}`
-                : "Desktop tasks with private local-tool policy."}
-            </p>
-          </div>
-          <PanelTabs activePanel={activePanel} onChange={setActivePanel} />
-          <div className="agent-rail-actions">
-            {activePanel === "chat" ? (
-              <button
-                type="button"
-                className="agent-new-task"
-                onClick={() => void startNewTask()}
-              >
-                New session
-              </button>
-            ) : null}
-            {!bridge.running ? (
-              <button
-                type="button"
-                className="agent-new-task"
-                disabled={bridgeStarting}
-                onClick={() => void startBridge()}
-              >
-                {bridgeStarting ? "Starting Hermes" : "Start Hermes"}
-              </button>
-            ) : null}
-          </div>
-        </header>
-
-        {activePanel !== "chat" ? null : (loading || hermesSessionsLoading) &&
-          !hermesSessionItems.length ? (
-          <div className="agent-loading">
-            <Spinner size={16} />
-          </div>
-        ) : hermesSessionItems.length ? (
-          <div className="agent-task-list">
-            {hermesSessionItems.map((session) => (
-              <button
-                key={session.id}
-                type="button"
-                className="agent-task-row"
-                data-active={session.id === selectedHermesSessionId}
-                onClick={() => {
-                  setSelectedHermesSessionId(session.id);
-                  setSelectedTaskId(undefined);
-                }}
-              >
-                <span className="agent-task-row-title">
-                  {session.title || session.preview || "Untitled session"}
-                </span>
-                <span className="agent-task-row-meta">
-                  <ActivityIndicator
-                    active={workingSessionIds.has(session.id)}
-                  />
-                  <span>{relativeDate(sessionTimestamp(session))}</span>
-                </span>
-                {!workingSessionIds.has(session.id) && session.preview ? (
-                  <span className="agent-task-row-summary">
-                    {session.preview}
-                  </span>
-                ) : null}
-              </button>
-            ))}
-          </div>
-        ) : tasks.length ? (
-          <div className="agent-task-list">
-            {tasks.map((task) => (
-              <button
-                key={task.id}
-                type="button"
-                className="agent-task-row"
-                data-active={task.id === selectedTask?.id}
-                onClick={() => {
-                  setSelectedTaskId(task.id);
-                  setSelectedHermesSessionId(task.hermesSessionId);
-                }}
-              >
-                <span className="agent-task-row-title">{task.title}</span>
-                <span className="agent-task-row-meta">
-                  <ActivityIndicator active={workingTaskIds.has(task.id)} />
-                  <span>{relativeDate(task.updatedAt)}</span>
-                </span>
-                {workingTaskIds.has(task.id) ? (
-                  <span className="agent-task-row-summary">Working now.</span>
-                ) : null}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <EmptyState
-            icon={<BotIcon size={22} />}
-            title="No agent tasks"
-            description="Ask the agent to do something on your desktop."
-            label="No agent tasks"
-          />
-        )}
-      </aside>
-
       <section className="agent-main" aria-label="Agent task details">
         {error ? <p className="error-banner">{error}</p> : null}
-        {managementPanel ??
-          (selectedHermesSessionId ? (
-            <>
-              <header className="agent-detail-header">
-                <div className="agent-detail-title">
-                  <ActivityIndicator
-                    active={workingSessionIds.has(selectedHermesSessionId)}
-                    large
-                  />
-                  <div>
-                    <h2>
-                      {selectedHermesSession?.title ||
-                        selectedHermesSession?.preview ||
-                        "Untitled session"}
-                    </h2>
-                  </div>
+        {managementPanel ? (
+          <>
+            <header className="agent-detail-header">
+              <div className="agent-detail-title">
+                <BotIcon size={18} />
+                <div>
+                  <h2>Agent</h2>
+                  <p>
+                    {bridge.running
+                      ? `Hermes bridge running on ${bridge.connection?.port ?? "local"}`
+                      : "Desktop tasks with private local-tool policy."}
+                  </p>
                 </div>
-                <div className="agent-actions">
+              </div>
+              <div className="agent-actions">
+                <PanelTabs
+                  activePanel={activePanel}
+                  onChange={setActivePanel}
+                />
+              </div>
+            </header>
+            {managementPanel}
+          </>
+        ) : selectedHermesSessionId ? (
+          <>
+            <header className="agent-detail-header">
+              <div className="agent-detail-title">
+                <ActivityIndicator
+                  active={workingSessionIds.has(selectedHermesSessionId)}
+                  large
+                />
+                <div>
+                  <h2>
+                    {selectedHermesSession?.title ||
+                      selectedHermesSession?.preview ||
+                      "Untitled session"}
+                  </h2>
+                </div>
+              </div>
+              <div className="agent-actions">
+                <PanelTabs
+                  activePanel={activePanel}
+                  onChange={setActivePanel}
+                />
+                <button
+                  type="button"
+                  className="agent-icon-button"
+                  aria-label="Refresh session"
+                  onClick={() =>
+                    void refreshHermesSession(selectedHermesSessionId)
+                  }
+                >
+                  <RotateCwIcon size={15} />
+                </button>
+              </div>
+            </header>
+            <div ref={listRef} className="agent-timeline">
+              <SafetyPanel />
+              {buildHermesSessionChatTurns(
+                selectedHermesMessages,
+                liveEvents[selectedHermesSessionId] ?? [],
+              ).map((turn) => (
+                <AgentChatTurnRow
+                  key={turn.id}
+                  turn={turn}
+                  approvalSubmitting={approvalSubmitting}
+                  onApproval={(part, choice) =>
+                    void respondToApproval(
+                      part.sessionId ?? selectedHermesSessionId,
+                      part.id,
+                      choice,
+                    )
+                  }
+                />
+              ))}
+            </div>
+          </>
+        ) : selectedTask ? (
+          <>
+            <header className="agent-detail-header">
+              <div className="agent-detail-title">
+                <ActivityIndicator
+                  active={workingTaskIds.has(selectedTask.id)}
+                  large
+                />
+                <div>
+                  <h2>{selectedTask.title}</h2>
+                  {workingTaskIds.has(selectedTask.id) ? (
+                    <p>Working now.</p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="agent-actions">
+                <PanelTabs
+                  activePanel={activePanel}
+                  onChange={setActivePanel}
+                />
+                {selectedTask.status !== "cancelled" &&
+                selectedTask.status !== "completed" ? (
                   <button
                     type="button"
                     className="agent-icon-button"
-                    aria-label="Refresh session"
-                    onClick={() =>
-                      void refreshHermesSession(selectedHermesSessionId)
-                    }
+                    aria-label="Cancel task"
+                    onClick={() => void cancelTask(selectedTask.id)}
+                  >
+                    <CircleStopIcon size={15} />
+                  </button>
+                ) : null}
+                {selectedTask.status === "failed" ||
+                selectedTask.status === "paused" ? (
+                  <button
+                    type="button"
+                    className="agent-icon-button"
+                    aria-label="Retry task"
+                    onClick={() => void retryTask(selectedTask.id)}
                   >
                     <RotateCwIcon size={15} />
                   </button>
-                </div>
-              </header>
-              <div ref={listRef} className="agent-timeline">
-                <SafetyPanel />
-                {buildHermesSessionChatTurns(
-                  selectedHermesMessages,
-                  liveEvents[selectedHermesSessionId] ?? [],
-                ).map((turn) => (
-                  <AgentChatTurnRow
-                    key={turn.id}
-                    turn={turn}
-                    approvalSubmitting={approvalSubmitting}
-                    onApproval={(part, choice) =>
-                      void respondToApproval(
-                        part.sessionId ?? selectedHermesSessionId,
-                        part.id,
-                        choice,
-                      )
-                    }
-                  />
-                ))}
+                ) : null}
               </div>
-            </>
-          ) : selectedTask ? (
-            <>
-              <header className="agent-detail-header">
-                <div className="agent-detail-title">
-                  <ActivityIndicator
-                    active={workingTaskIds.has(selectedTask.id)}
-                    large
-                  />
-                  <div>
-                    <h2>{selectedTask.title}</h2>
-                    {workingTaskIds.has(selectedTask.id) ? (
-                      <p>Working now.</p>
-                    ) : null}
-                  </div>
+            </header>
+            <div ref={listRef} className="agent-timeline">
+              <SafetyPanel />
+              {buildAgentChatTurns(
+                selectedTask.messages,
+                selectedTask.toolEvents,
+                liveEvents[selectedTask.id] ?? [],
+              ).map((turn) => (
+                <AgentChatTurnRow
+                  key={turn.id}
+                  turn={turn}
+                  approvalSubmitting={approvalSubmitting}
+                  onApproval={(part, choice) => {
+                    const sessionId =
+                      part.sessionId ??
+                      selectedTask.hermesSessionId ??
+                      hermesSessions[selectedTask.id];
+                    if (!sessionId) return;
+                    void respondToApproval(sessionId, part.id, choice);
+                  }}
+                />
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <header className="agent-detail-header">
+              <div className="agent-detail-title">
+                <BotIcon size={18} />
+                <div>
+                  <h2>Agent</h2>
+                  <p>
+                    {bridge.running
+                      ? `Hermes bridge running on ${bridge.connection?.port ?? "local"}`
+                      : "Desktop tasks with private local-tool policy."}
+                  </p>
                 </div>
-                <div className="agent-actions">
-                  {selectedTask.status !== "cancelled" &&
-                  selectedTask.status !== "completed" ? (
-                    <button
-                      type="button"
-                      className="agent-icon-button"
-                      aria-label="Cancel task"
-                      onClick={() => void cancelTask(selectedTask.id)}
-                    >
-                      <CircleStopIcon size={15} />
-                    </button>
-                  ) : null}
-                  {selectedTask.status === "failed" ||
-                  selectedTask.status === "paused" ? (
-                    <button
-                      type="button"
-                      className="agent-icon-button"
-                      aria-label="Retry task"
-                      onClick={() => void retryTask(selectedTask.id)}
-                    >
-                      <RotateCwIcon size={15} />
-                    </button>
-                  ) : null}
-                </div>
-              </header>
-              <div ref={listRef} className="agent-timeline">
-                <SafetyPanel />
-                {buildAgentChatTurns(
-                  selectedTask.messages,
-                  selectedTask.toolEvents,
-                  liveEvents[selectedTask.id] ?? [],
-                ).map((turn) => (
-                  <AgentChatTurnRow
-                    key={turn.id}
-                    turn={turn}
-                    approvalSubmitting={approvalSubmitting}
-                    onApproval={(part, choice) => {
-                      const sessionId =
-                        part.sessionId ??
-                        selectedTask.hermesSessionId ??
-                        hermesSessions[selectedTask.id];
-                      if (!sessionId) return;
-                      void respondToApproval(sessionId, part.id, choice);
-                    }}
-                  />
-                ))}
               </div>
-            </>
-          ) : (
+              <div className="agent-actions">
+                <PanelTabs
+                  activePanel={activePanel}
+                  onChange={setActivePanel}
+                />
+                {!bridge.running ? (
+                  <button
+                    type="button"
+                    className="agent-new-task"
+                    disabled={bridgeStarting}
+                    onClick={() => void startBridge()}
+                  >
+                    {bridgeStarting ? "Starting Hermes" : "Start Hermes"}
+                  </button>
+                ) : null}
+              </div>
+            </header>
             <div className="agent-compose-empty">
               <EmptyState
                 icon={<BotIcon size={24} />}
-                title="Start an agent task"
-                description="Create a task and the agent will track chat, status, and local-tool activity separately from your notes."
-                label="Start an agent task"
+                title="Start an agent session"
+                description="Use New Session in the sidebar, then ask the agent to complete a desktop task."
+                label="Start an agent session"
               />
             </div>
-          ))}
+          </>
+        )}
 
         {activePanel === "chat" ? (
           <form
@@ -1411,14 +1411,6 @@ function PanelTabs({
       >
         <MessageSquareIcon size={14} />
         Messaging
-      </button>
-      <button
-        type="button"
-        aria-selected={activePanel === "files"}
-        onClick={() => onChange("files")}
-      >
-        <FolderTreeIcon size={14} />
-        Files
       </button>
     </div>
   );

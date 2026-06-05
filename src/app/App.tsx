@@ -109,7 +109,7 @@ export function App() {
   const [sidebarTransition, setSidebarTransition] = useState<"none" | "smooth">(
     "none",
   );
-  const [activeView, setActiveView] = useState<SidebarView>("notes");
+  const [activeView, setActiveView] = useState<SidebarView>("meetings");
   const [originFolderId, setOriginFolderId] = useState<string | undefined>();
   // Tracks that the open note was drilled into from the All notes view, so the
   // note shows the same back-arrow + breadcrumb chrome folders use. Cleared
@@ -290,7 +290,7 @@ export function App() {
           startOnFreshNoteRef.current = false;
           const note = await createNote(undefined);
           dispatch({ type: "noteLoaded", note });
-          setActiveView("notes");
+          setActiveView("meetings");
           return;
         }
         const firstNoteId = seeded.payload.notes[0]?.id;
@@ -443,7 +443,7 @@ export function App() {
         dispatch({ type: "noteLoaded", note });
         setOriginFolderId(undefined);
         setOriginAllNotes(false);
-        setActiveView("notes");
+        setActiveView("meetings");
       } catch (err) {
         setError(messageFromError(err));
       }
@@ -472,7 +472,7 @@ export function App() {
     if (state.selectedNoteId !== noteId) {
       await handleSelectNote(noteId);
     }
-    setActiveView("notes");
+    setActiveView("meetings");
     setFolderReturnTarget(undefined);
   }
 
@@ -569,7 +569,7 @@ export function App() {
       setOriginFolderId(undefined);
       setOriginAllNotes(true);
       setFolderReturnTarget(undefined);
-      setActiveView("notes");
+      setActiveView("meetings");
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -605,7 +605,7 @@ export function App() {
       setOriginFolderId(folderId);
       setOriginAllNotes(false);
       setFolderReturnTarget(undefined);
-      setActiveView("notes");
+      setActiveView("meetings");
     } catch (err) {
       setError(messageFromError(err));
     }
@@ -804,7 +804,7 @@ export function App() {
             setFolderReturnTarget(undefined);
             dispatch({ type: "folderSelected", folderId: undefined });
           }
-          if (view !== "notes") {
+          if (view !== "meetings" && view !== "notes") {
             setOriginFolderId(undefined);
             setOriginAllNotes(false);
             setFolderReturnTarget(undefined);
@@ -931,7 +931,7 @@ export function App() {
                     void handleSelectNoteFromFolder(noteId, folderId);
                   } else {
                     void handleSelectNote(noteId).then(() =>
-                      setActiveView("notes"),
+                      setActiveView("meetings"),
                     );
                   }
                 }}
@@ -969,25 +969,25 @@ export function App() {
                           setOriginFolderId(undefined);
                         },
                       },
-                      { label: selectedNote.title.trim() || "New note" },
+                      { label: selectedNote.title.trim() || "New meeting" },
                     ]}
                   />
                 ) : originAllNotes ? (
                   <BreadcrumbBar
-                    backLabel="Back to All notes"
+                    backLabel="Back to All meetings"
                     onBack={() => {
                       setActiveView("all-notes");
                       setOriginAllNotes(false);
                     }}
                     items={[
                       {
-                        label: "All notes",
+                        label: "All meetings",
                         onClick: () => {
                           setActiveView("all-notes");
                           setOriginAllNotes(false);
                         },
                       },
-                      { label: selectedNote.title.trim() || "New note" },
+                      { label: selectedNote.title.trim() || "New meeting" },
                     ]}
                   />
                 ) : null}
@@ -1053,7 +1053,7 @@ export function App() {
                     dispatch({ type: "folderSelected", folderId });
                     setFolderReturnTarget({
                       noteId: selectedNote.id,
-                      label: selectedNote.title.trim() || "New note",
+                      label: selectedNote.title.trim() || "New meeting",
                     });
                     setOriginFolderId(undefined);
                   }}
@@ -1074,7 +1074,7 @@ export function App() {
                   className="primary-action"
                   onClick={() => void handleCreateNote(null)}
                 >
-                  New note
+                  New meeting
                 </button>
               </section>
             )}

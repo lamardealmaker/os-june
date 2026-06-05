@@ -15,6 +15,14 @@ import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconSortArrowUpDown } from "central-icons/IconSortArrowUpDown";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import {
+  hermesBridgeFilesystemSnapshot,
+  type HermesFilesystemEntry,
+  type HermesFilesystemRoot,
+  type HermesFilesystemSnapshot,
+  type FolderDto,
+  type NoteListItemDto,
+} from "../../lib/tauri";
+import {
   type DragEvent,
   useEffect,
   useLayoutEffect,
@@ -23,7 +31,6 @@ import {
   useState,
 } from "react";
 import { NOTE_DND_MIME } from "../../lib/dnd";
-import type { FolderDto, NoteListItemDto } from "../../lib/tauri";
 import { BreadcrumbBar } from "../ui/BreadcrumbBar";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
 import { EmptyState } from "../ui/EmptyState";
@@ -100,6 +107,10 @@ function FolderList({
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [editId, setEditId] = useState<string | null>(null);
+  const [filesystemSnapshot, setFilesystemSnapshot] =
+    useState<HermesFilesystemSnapshot | null>(null);
+  const [selectedFileRootId, setSelectedFileRootId] =
+    useState<string>("workspace");
   const deleteFolderTarget = folders.find((f) => f.id === deleteId);
   const editFolderTarget = folders.find((f) => f.id === editId);
 
@@ -118,6 +129,31 @@ function FolderList({
       window.removeEventListener("keydown", onKey);
     };
   }, [menu]);
+
+  useEffect(() => {
+    let cancelled = false;
+    hermesBridgeFilesystemSnapshot()
+      .then((snapshot) => {
+        if (!cancelled) setFilesystemSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (!cancelled) setFilesystemSnapshot({ roots: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const hermesFileRoots = useMemo(
+    () =>
+      (filesystemSnapshot?.roots ?? []).filter(
+        (root) => root.id === "workspace" || root.id === "memory",
+      ),
+    [filesystemSnapshot],
+  );
+  const selectedFileRoot =
+    hermesFileRoots.find((root) => root.id === selectedFileRootId) ??
+    hermesFileRoots[0];
 
   const sortedAndFiltered = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -228,6 +264,43 @@ function FolderList({
           ))}
         </div>
       )}
+
+      {hermesFileRoots.length ? (
+        <section className="folders-hermes-files" aria-label="Agent files">
+          <header className="folders-hermes-header">
+            <div>
+              <h2>Agent files</h2>
+              <p>Workspace outputs and persistent memory from Hermes.</p>
+            </div>
+          </header>
+          <div className="folders-grid folders-hermes-grid" role="list">
+            {hermesFileRoots.map((root) => (
+              <button
+                key={root.id}
+                type="button"
+                className="folder-card folders-file-root-card"
+                data-active={root.id === selectedFileRoot?.id}
+                onClick={() => setSelectedFileRootId(root.id)}
+              >
+                <span className="folder-card-icon">
+                  <IconFolderOpen size={18} />
+                </span>
+                <span className="folder-card-name">{root.label}</span>
+                <span className="folder-card-meta">
+                  {root.entries.length}{" "}
+                  {root.entries.length === 1 ? "entry" : "entries"}
+                </span>
+                <span className="folder-card-description">
+                  {root.description}
+                </span>
+              </button>
+            ))}
+          </div>
+          {selectedFileRoot ? (
+            <HermesRootEntries root={selectedFileRoot} />
+          ) : null}
+        </section>
+      ) : null}
 
       {menu ? (
         <FolderCardMenu
@@ -351,6 +424,67 @@ function SortDropdown({
 }
 
 type MenuState = { folderId: string; right: number; top: number };
+
+function HermesRootEntries({ root }: { root: HermesFilesystemRoot }) {
+  return (
+    <div className="folders-file-root-detail">
+      <div className="folders-file-root-title">
+        <h3>{root.label}</h3>
+        <code>{compactPath(root.path)}</code>
+      </div>
+      {root.entries.length ? (
+        <div className="folders-file-list">
+          {root.entries.map((entry) => (
+            <HermesFileEntry key={entry.path} entry={entry} level={0} />
+          ))}
+        </div>
+      ) : (
+        <p className="folders-empty">No visible entries.</p>
+      )}
+    </div>
+  );
+}
+
+function HermesFileEntry({
+  entry,
+  level,
+}: {
+  entry: HermesFilesystemEntry;
+  level: number;
+}) {
+  const isDirectory = entry.kind === "directory";
+  return (
+    <div>
+      <div
+        className="folders-file-entry"
+        style={{ paddingLeft: 12 + level * 18 }}
+      >
+        {isDirectory ? <IconFolder1 size={14} /> : <IconNoteText size={14} />}
+        <span>{entry.name}</span>
+        <small>
+          {isDirectory
+            ? "Folder"
+            : entry.size != null
+              ? formatBytes(entry.size)
+              : "File"}
+        </small>
+      </div>
+      {entry.children?.map((child) => (
+        <HermesFileEntry key={child.path} entry={child} level={level + 1} />
+      ))}
+    </div>
+  );
+}
+
+function compactPath(path: string) {
+  return path.replace(/^\/Users\/[^/]+/, "~");
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 function FolderCard({
   folder,
