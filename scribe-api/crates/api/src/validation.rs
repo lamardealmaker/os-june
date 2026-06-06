@@ -58,6 +58,9 @@ fn validate_output_tokens(value: Option<&Value>, field: &str) -> Result<(), ApiE
     let Some(value) = value else {
         return Ok(());
     };
+    if value.is_null() {
+        return Ok(());
+    }
     let Some(tokens) = value.as_u64() else {
         return Err(ApiError::bad_request(format!("{field}_invalid")));
     };
@@ -137,6 +140,31 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn agent_body_accepts_null_output_tokens() {
+        assert!(
+            validate_agent_chat_body(&json!({
+                "model": "text-model",
+                "messages": [{ "role": "user", "content": "hello" }],
+                "max_tokens": null,
+                "max_completion_tokens": null,
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn agent_body_rejects_negative_output_tokens() {
+        assert!(matches!(
+            validate_agent_chat_body(&json!({
+                "model": "text-model",
+                "messages": [{ "role": "user", "content": "hello" }],
+                "max_tokens": -1,
+            })),
+            Err(ApiError::BadRequest { message, .. }) if message == "max_tokens_invalid"
+        ));
     }
 
     #[test]
