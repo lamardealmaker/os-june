@@ -2,6 +2,7 @@ import {
   BotIcon,
   CheckIcon,
   CircleStopIcon,
+  DownloadIcon,
   FileIcon,
   FolderIcon,
   FolderTreeIcon,
@@ -88,7 +89,6 @@ const AGENT_TITLE_TIMEOUT_MS = 2500;
 type AgentPanel = "chat" | "skills" | "messaging";
 
 export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
-export const AGENT_SELECT_SESSION_EVENT = "scribe:agent:select-session";
 export const AGENT_DELETE_SESSION_EVENT = "scribe:agent:delete-session";
 export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
 export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
@@ -97,10 +97,6 @@ export type AgentSessionsChangedDetail = {
   sessions: HermesSessionInfo[];
   selectedSessionId?: string;
   workingSessionIds: string[];
-};
-
-type AgentSelectSessionDetail = {
-  sessionId: string;
 };
 
 export type AgentNewSessionDetail = {
@@ -347,16 +343,6 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       void startNewTask(detail?.prompt);
     }
 
-    function handleSelectSession(event: Event) {
-      const detail = (event as CustomEvent<AgentSelectSessionDetail>).detail;
-      if (!detail?.sessionId) return;
-      newSessionModeRef.current = false;
-      setNewSessionMode(false);
-      setActivePanel("chat");
-      setSelectedHermesSessionId(detail.sessionId);
-      setSelectedTaskId(undefined);
-    }
-
     function handleDeleteSession(event: Event) {
       const detail = (event as CustomEvent<AgentDeleteSessionDetail>).detail;
       if (!detail?.sessionId) return;
@@ -385,14 +371,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     }
 
     window.addEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
-    window.addEventListener(AGENT_SELECT_SESSION_EVENT, handleSelectSession);
     window.addEventListener(AGENT_DELETE_SESSION_EVENT, handleDeleteSession);
     return () => {
       window.removeEventListener(AGENT_NEW_SESSION_EVENT, handleNewSession);
-      window.removeEventListener(
-        AGENT_SELECT_SESSION_EVENT,
-        handleSelectSession,
-      );
       window.removeEventListener(
         AGENT_DELETE_SESSION_EVENT,
         handleDeleteSession,
@@ -2357,8 +2338,13 @@ function AgentArtifactList({
             </p>
           </div>
           {onDownload ? (
-            <button type="button" onClick={() => onDownload(artifact)}>
-              Download
+            <button
+              type="button"
+              aria-label={`Download ${artifact.name}`}
+              title="Download"
+              onClick={() => onDownload(artifact)}
+            >
+              <DownloadIcon size={16} />
             </button>
           ) : null}
         </article>
