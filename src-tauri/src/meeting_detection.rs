@@ -6,6 +6,8 @@ const CLEAR_AFTER_INACTIVE_POLLS: u8 = 2;
 const HEARTBEAT_EVERY_ACTIVE_POLLS: u8 = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEETING_DETECTION_EVENT_NAME: &str = "meeting-detection-event";
+const ALLOWED_MIC_APP_BUNDLE_PREFIXES: &[&str] =
+    &["company.thebrowser.Browser", "com.google.Chrome"];
 
 pub fn setup(app: &mut tauri::App) {
     #[cfg(target_os = "macos")]
@@ -68,15 +70,67 @@ impl MeetingDetectionState {
     }
 }
 
-pub(crate) fn active_external_pids(
-    active_input_pids: &[u32],
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MicrophoneInputProcess {
+    pub(crate) pid: u32,
+    pub(crate) bundle_id: String,
+    pub(crate) app_label: String,
+}
+
+impl MicrophoneInputProcess {
+    pub(crate) fn new(pid: u32, bundle_id: String) -> Option<Self> {
+        let bundle_id = bundle_id.trim().to_string();
+        if pid == 0 || bundle_id.is_empty() {
+            return None;
+        }
+        let app_label = app_label_from_bundle_id(&bundle_id);
+        Some(Self {
+            pid,
+            bundle_id,
+            app_label,
+        })
+    }
+}
+
+pub(crate) fn active_allowed_external_processes(
+    active_input_processes: &[MicrophoneInputProcess],
     owned_pids: &BTreeSet<u32>,
-) -> Vec<u32> {
-    active_input_pids
+) -> Vec<MicrophoneInputProcess> {
+    active_input_processes
         .iter()
-        .copied()
-        .filter(|pid| *pid != 0 && !owned_pids.contains(pid))
+        .filter(|process| process.pid != 0 && !owned_pids.contains(&process.pid))
+        .filter(|process| is_allowed_microphone_app(&process.bundle_id))
+        .cloned()
         .collect()
+}
+
+fn is_allowed_microphone_app(bundle_id: &str) -> bool {
+    ALLOWED_MIC_APP_BUNDLE_PREFIXES
+        .iter()
+        .any(|prefix| bundle_id_matches_prefix(bundle_id, prefix))
+}
+
+fn bundle_id_matches_prefix(bundle_id: &str, prefix: &str) -> bool {
+    let bundle_id = bundle_id.trim().to_ascii_lowercase();
+    let prefix = prefix.trim().to_ascii_lowercase();
+    bundle_id == prefix
+        || bundle_id
+            .strip_prefix(&prefix)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+fn app_label_from_bundle_id(bundle_id: &str) -> String {
+    if bundle_id_matches_prefix(bundle_id, "company.thebrowser.Browser") {
+        return "Arc".to_string();
+    }
+    if bundle_id_matches_prefix(bundle_id, "com.google.Chrome") {
+        return "Chrome".to_string();
+    }
+    bundle_id
+        .rsplit('.')
+        .find(|part| !part.trim().is_empty())
+        .unwrap_or(bundle_id)
+        .to_string()
 }
 
 #[cfg(target_os = "macos")]
@@ -88,10 +142,10 @@ fn spawn_monitor(app: AppHandle) {
         loop {
             thread::sleep(POLL_INTERVAL);
 
-            let active_pids = match active_input_process_pids() {
-                Ok(active_pids) => {
+            let active_processes = match active_input_processes() {
+                Ok(active_processes) => {
                     warned_after_probe_error = false;
-                    active_pids
+                    active_processes
                 }
                 Err(error) => {
                     if !warned_after_probe_error {
@@ -101,10 +155,11 @@ fn spawn_monitor(app: AppHandle) {
                     Vec::new()
                 }
             };
-            let external_pids = active_external_pids(&active_pids, &owned_pids(&app));
+            let allowed_processes =
+                active_allowed_external_processes(&active_processes, &owned_pids(&app));
             let capture_active = crate::audio::capture::is_capture_active();
-            if let Some(event) = state.update(!external_pids.is_empty(), capture_active) {
-                emit_detection_event(&app, event, external_pids.len());
+            if let Some(event) = state.update(!allowed_processes.is_empty(), capture_active) {
+                emit_detection_event(&app, event, allowed_processes.len());
             }
         }
     });
@@ -160,10 +215,10 @@ fn emit_detection_event(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::active_input_process_pids;
+pub(crate) use macos::active_input_processes;
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn active_input_process_pids() -> Result<Vec<u32>, ProbeError> {
+pub(crate) fn active_input_processes() -> Result<Vec<MicrophoneInputProcess>, ProbeError> {
     Ok(Vec::new())
 }
 
@@ -193,7 +248,7 @@ impl std::error::Error for ProbeError {}
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::ProbeError;
+    use super::{MicrophoneInputProcess, ProbeError};
     use std::{ffi::c_void, mem, ptr};
 
     type AudioObjectId = u32;
@@ -253,8 +308,8 @@ mod macos {
         fn CFRelease(cf: *const c_void);
     }
 
-    pub(crate) fn active_input_process_pids() -> Result<Vec<u32>, ProbeError> {
-        let mut pids = Vec::new();
+    pub(crate) fn active_input_processes() -> Result<Vec<MicrophoneInputProcess>, ProbeError> {
+        let mut processes = Vec::new();
         for process_object in process_objects()? {
             if process_object == AUDIO_OBJECT_UNKNOWN {
                 continue;
@@ -268,21 +323,21 @@ mod macos {
             if running_input == 0 {
                 continue;
             }
-            if !process_has_input_devices(process_object)
-                || read_process_bundle_id(process_object)
-                    .ok()
-                    .flatten()
-                    .is_none()
-            {
+            if !process_has_input_devices(process_object) {
                 continue;
             }
-            if let Ok(Some(pid)) = read_process_pid(process_object) {
-                pids.push(pid);
+            if let (Ok(Some(pid)), Ok(Some(bundle_id))) = (
+                read_process_pid(process_object),
+                read_process_bundle_id(process_object),
+            ) {
+                if let Some(process) = MicrophoneInputProcess::new(pid, bundle_id) {
+                    processes.push(process);
+                }
             }
         }
-        pids.sort_unstable();
-        pids.dedup();
-        Ok(pids)
+        processes.sort_by_key(|process| process.pid);
+        processes.dedup_by_key(|process| process.pid);
+        Ok(processes)
     }
 
     fn process_objects() -> Result<Vec<AudioObjectId>, ProbeError> {
@@ -485,12 +540,30 @@ mod macos {
 mod tests {
     use super::*;
 
+    fn input_process(pid: u32, bundle_id: &str) -> MicrophoneInputProcess {
+        MicrophoneInputProcess::new(pid, bundle_id.to_string()).expect("valid process")
+    }
+
     #[test]
-    fn active_external_pids_excludes_owned_processes() {
+    fn active_allowed_external_processes_excludes_owned_processes() {
         let owned = BTreeSet::from([10, 20]);
+        let processes = vec![
+            MicrophoneInputProcess {
+                pid: 0,
+                bundle_id: "com.google.Chrome".to_string(),
+                app_label: "Chrome".to_string(),
+            },
+            input_process(10, "com.google.Chrome"),
+            input_process(30, "com.google.Chrome"),
+            input_process(20, "company.thebrowser.Browser"),
+            input_process(40, "company.thebrowser.Browser"),
+        ];
 
         assert_eq!(
-            active_external_pids(&[0, 10, 30, 20, 40], &owned),
+            active_allowed_external_processes(&processes, &owned)
+                .into_iter()
+                .map(|process| process.pid)
+                .collect::<Vec<_>>(),
             vec![30, 40]
         );
     }
