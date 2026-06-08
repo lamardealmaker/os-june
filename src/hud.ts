@@ -391,7 +391,10 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
     return;
   }
 
-  if (meetingEvent.type === "meeting_cleared" && hud?.dataset.state === "meeting") {
+  if (
+    meetingEvent.type === "meeting_cleared" &&
+    hud?.dataset.state === "meeting"
+  ) {
     void hideHud();
   }
 }
