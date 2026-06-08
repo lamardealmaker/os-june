@@ -14,9 +14,11 @@ import {
   WrenchIcon,
   XIcon,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 import {
   type CSSProperties,
   type FormEvent,
+  type DragEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -32,9 +34,11 @@ import {
   getAgentTask,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
+  hermesBridgeFilePreview,
   hermesBridgeSkills,
   hermesBridgeStatus,
   hermesBridgeToolsets,
+  importHermesBridgeFile,
   listAgentTasks,
   downloadHermesBridgeFile,
   retryAgentTask,
@@ -53,6 +57,7 @@ import {
   type HermesBridgeStatus,
   type HermesFilesystemEntry,
   type HermesFilesystemSnapshot,
+  type ImportedHermesFile,
   type HermesMessagingEnvVarInfo,
   type HermesMessagingPlatformInfo,
   type HermesSessionInfo,
@@ -113,6 +118,15 @@ type AgentArtifact = {
   path: string;
   rootLabel: string;
   size?: number | null;
+  previewDataUrl?: string | null;
+};
+
+type AgentAttachment = ImportedHermesFile & {
+  id: string;
+};
+
+type TauriFileDropPayload = {
+  paths?: string[];
 };
 
 type HermesRuntimeSessionResponse = {
@@ -130,6 +144,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
+  const [dropActive, setDropActive] = useState(false);
+  const [importingFiles, setImportingFiles] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -504,6 +521,33 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   ]);
 
   useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    const installListener = async (eventName: string) => {
+      const unlisten = await listen<TauriFileDropPayload>(
+        eventName,
+        (event) => {
+          const paths = event.payload?.paths ?? [];
+          if (paths.length) {
+            void importDroppedFilePaths(paths);
+          }
+        },
+      );
+      if (disposed) {
+        unlisten();
+        return;
+      }
+      unlisteners.push(unlisten);
+    };
+    void installListener("tauri://drag-drop");
+    void installListener("tauri://file-drop");
+    return () => {
+      disposed = true;
+      for (const unlisten of unlisteners) unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
     if (activePanel === "skills" && (!skills || !toolsets)) {
       void loadCapabilities();
     }
@@ -514,19 +558,71 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    const content = draft.trim();
-    if (!content || submitting) return;
+    const message = draft.trim();
+    if ((!message && !attachments.length) || submitting || importingFiles)
+      return;
+    const content = promptWithAttachments(message, attachments);
     setSubmitting(true);
     setDraft("");
     try {
       await submitHermesSession(content);
+      setAttachments([]);
       setError(null);
     } catch (err) {
-      setDraft(content);
+      setDraft(message);
       setError(messageFromError(err));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  function handleComposerDragOver(event: DragEvent<HTMLFormElement>) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setDropActive(true);
+  }
+
+  function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setDropActive(false);
+    const paths = Array.from(event.dataTransfer.files)
+      .map((file) => (file as File & { path?: string }).path)
+      .filter((path): path is string => Boolean(path));
+    if (!paths.length) {
+      setError("Drop files from Finder to attach them to the agent.");
+      return;
+    }
+    void importDroppedFilePaths(paths);
+  }
+
+  async function importDroppedFilePaths(paths: string[]) {
+    const uniquePaths = Array.from(new Set(paths.map((path) => path.trim())))
+      .filter(Boolean)
+      .slice(0, 8);
+    if (!uniquePaths.length) return;
+    setImportingFiles(true);
+    try {
+      const imported = await Promise.all(
+        uniquePaths.map((path) => importHermesBridgeFile(path)),
+      );
+      setAttachments((current) => [
+        ...current,
+        ...imported.map((file) => ({
+          ...file,
+          id: `${file.path}:${Date.now()}:${Math.random().toString(36)}`,
+        })),
+      ]);
+      setError(null);
+      void loadFilesystemSnapshot();
+    } catch (err) {
+      setError(messageFromError(err));
+    } finally {
+      setImportingFiles(false);
+    }
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((current) => current.filter((item) => item.id !== id));
   }
 
   async function submitHermesSession(content: string) {
@@ -1221,24 +1317,69 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         {activePanel === "chat" ? (
           <form
             className="agent-composer"
+            data-drop-active={dropActive ? "true" : undefined}
             onSubmit={(event) => void submit(event)}
+            onDragOver={handleComposerDragOver}
+            onDragEnter={() => setDropActive(true)}
+            onDragLeave={() => setDropActive(false)}
+            onDrop={handleComposerDrop}
           >
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.currentTarget.value)}
-              placeholder={
-                selectedHermesSessionId || selectedTask
-                  ? "Send a follow-up"
-                  : "Ask the agent to complete a desktop task"
-              }
-              rows={2}
-              onKeyDown={(event) => {
-                if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-                  event.currentTarget.form?.requestSubmit();
+            <div className="agent-composer-input">
+              {attachments.length ? (
+                <div className="agent-attachment-list" aria-label="Attachments">
+                  {attachments.map((attachment) => (
+                    <div key={attachment.id} className="agent-attachment-chip">
+                      {attachment.previewDataUrl ? (
+                        <img
+                          src={attachment.previewDataUrl}
+                          alt=""
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <FileIcon size={15} />
+                      )}
+                      <span>{attachment.name}</span>
+                      <em>{attachment.rootLabel}</em>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${attachment.name}`}
+                        onClick={() => removeAttachment(attachment.id)}
+                      >
+                        <XIcon size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.currentTarget.value)}
+                placeholder={
+                  importingFiles
+                    ? "Attaching file..."
+                    : selectedHermesSessionId || selectedTask
+                      ? "Send a follow-up"
+                      : "Ask the agent to complete a desktop task"
                 }
-              }}
-            />
-            <button type="submit" disabled={submitting || !draft.trim()}>
+                rows={2}
+                onKeyDown={(event) => {
+                  if (
+                    (event.metaKey || event.ctrlKey) &&
+                    event.key === "Enter"
+                  ) {
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={
+                submitting ||
+                importingFiles ||
+                (!draft.trim() && !attachments.length)
+              }
+            >
               {submitting ? <Spinner size={15} /> : <SendIcon size={15} />}
               <span>
                 {selectedHermesSessionId || selectedTask ? "Send" : "Create"}
@@ -2543,33 +2684,82 @@ function AgentArtifactList({
   return (
     <div className="agent-artifact-list" aria-label="Generated files">
       {artifacts.map((artifact) => (
-        <article key={artifact.path} className="agent-artifact-card">
-          <span className="agent-tool-icon">
-            <FileIcon size={14} />
-          </span>
-          <div>
-            <div className="agent-artifact-title">
-              <span>{artifact.name}</span>
-              <em>{artifact.rootLabel}</em>
-            </div>
-            <p>
-              {formatBytes(artifact.size)}
-              <span>{compactPath(artifact.path)}</span>
-            </p>
-          </div>
-          {onDownload ? (
-            <button
-              type="button"
-              aria-label={`Download ${artifact.name}`}
-              title="Download"
-              onClick={() => onDownload(artifact)}
-            >
-              <DownloadIcon size={16} />
-            </button>
-          ) : null}
-        </article>
+        <AgentArtifactCard
+          key={artifact.path}
+          artifact={artifact}
+          onDownload={onDownload}
+        />
       ))}
     </div>
+  );
+}
+
+function AgentArtifactCard({
+  artifact,
+  onDownload,
+}: {
+  artifact: AgentArtifact;
+  onDownload?: (artifact: AgentArtifact) => void;
+}) {
+  const [previewDataUrl, setPreviewDataUrl] = useState<string | null>(
+    artifact.previewDataUrl ?? null,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (artifact.previewDataUrl || !isPreviewableImagePath(artifact.path)) {
+      setPreviewDataUrl(artifact.previewDataUrl ?? null);
+      return;
+    }
+    hermesBridgeFilePreview(artifact.path)
+      .then((preview) => {
+        if (!cancelled) setPreviewDataUrl(preview);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewDataUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifact.path, artifact.previewDataUrl]);
+
+  return (
+    <article
+      className="agent-artifact-card"
+      data-has-preview={previewDataUrl ? "true" : undefined}
+    >
+      {previewDataUrl ? (
+        <img
+          className="agent-artifact-preview"
+          src={previewDataUrl}
+          alt={artifact.name}
+        />
+      ) : (
+        <span className="agent-tool-icon">
+          <FileIcon size={14} />
+        </span>
+      )}
+      <div>
+        <div className="agent-artifact-title">
+          <span>{artifact.name}</span>
+          <em>{artifact.rootLabel}</em>
+        </div>
+        <p>
+          {formatBytes(artifact.size)}
+          <span>{compactPath(artifact.path)}</span>
+        </p>
+      </div>
+      {onDownload ? (
+        <button
+          type="button"
+          aria-label={`Download ${artifact.name}`}
+          title="Download"
+          onClick={() => onDownload(artifact)}
+        >
+          <DownloadIcon size={16} />
+        </button>
+      ) : null}
+    </article>
   );
 }
 
@@ -2944,6 +3134,24 @@ function artifactsFromFilesystemSnapshot(
   );
 }
 
+function promptWithAttachments(
+  message: string,
+  attachments: AgentAttachment[],
+): string {
+  if (!attachments.length) return message;
+  return [
+    message || "Use the attached file(s).",
+    "",
+    "Attached files copied into the Scribe Hermes workspace:",
+    ...attachments.map(
+      (attachment) =>
+        `- ${attachment.name} (${attachment.rootLabel}): ${attachment.path}`,
+    ),
+    "",
+    "Use these workspace paths when inspecting or operating on the files.",
+  ].join("\n");
+}
+
 function filesystemEntriesToArtifacts(
   entries: HermesFilesystemEntry[],
   rootLabel: string,
@@ -2986,6 +3194,10 @@ function artifactsMentionedInText(
     seen.add(artifact.path);
     return true;
   });
+}
+
+function isPreviewableImagePath(path: string) {
+  return /\.(png|jpe?g|gif|webp)$/i.test(path);
 }
 
 function includesQuery(value: unknown, query: string) {
