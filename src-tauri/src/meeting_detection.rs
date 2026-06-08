@@ -6,8 +6,14 @@ const CLEAR_AFTER_INACTIVE_POLLS: u8 = 2;
 const HEARTBEAT_EVERY_ACTIVE_POLLS: u8 = 5;
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEETING_DETECTION_EVENT_NAME: &str = "meeting-detection-event";
-const ALLOWED_MIC_APP_BUNDLE_PREFIXES: &[&str] =
-    &["company.thebrowser.Browser", "com.google.Chrome"];
+const ALLOWED_MIC_APP_BUNDLE_PREFIXES: &[&str] = &[
+    "company.thebrowser.Browser",
+    "com.google.Chrome",
+    "com.apple.Safari",
+    "com.microsoft.teams",
+    "com.microsoft.teams2",
+    "us.zoom.xos",
+];
 
 pub fn setup(app: &mut tauri::App) {
     #[cfg(target_os = "macos")]
@@ -125,6 +131,17 @@ fn app_label_from_bundle_id(bundle_id: &str) -> String {
     }
     if bundle_id_matches_prefix(bundle_id, "com.google.Chrome") {
         return "Chrome".to_string();
+    }
+    if bundle_id_matches_prefix(bundle_id, "com.apple.Safari") {
+        return "Safari".to_string();
+    }
+    if bundle_id_matches_prefix(bundle_id, "com.microsoft.teams")
+        || bundle_id_matches_prefix(bundle_id, "com.microsoft.teams2")
+    {
+        return "Teams".to_string();
+    }
+    if bundle_id_matches_prefix(bundle_id, "us.zoom.xos") {
+        return "Zoom".to_string();
     }
     bundle_id
         .rsplit('.')
@@ -596,11 +613,48 @@ mod tests {
     }
 
     #[test]
+    fn safari_mic_process_triggers_detection_filter() {
+        let exact = input_process(42, "com.apple.Safari");
+        let helper = input_process(43, "com.apple.Safari.WebContent");
+
+        assert_eq!(exact.app_label, "Safari");
+        assert_eq!(helper.app_label, "Safari");
+        assert_eq!(allowed_pids(&[exact, helper]), vec![42, 43]);
+    }
+
+    #[test]
+    fn teams_mic_process_triggers_detection_filter() {
+        let classic = input_process(44, "com.microsoft.teams");
+        let classic_helper = input_process(45, "com.microsoft.teams.helper");
+        let modern = input_process(46, "com.microsoft.teams2");
+        let modern_helper = input_process(47, "com.microsoft.teams2.helper");
+
+        assert_eq!(classic.app_label, "Teams");
+        assert_eq!(classic_helper.app_label, "Teams");
+        assert_eq!(modern.app_label, "Teams");
+        assert_eq!(modern_helper.app_label, "Teams");
+        assert_eq!(
+            allowed_pids(&[classic, classic_helper, modern, modern_helper]),
+            vec![44, 45, 46, 47]
+        );
+    }
+
+    #[test]
+    fn zoom_mic_process_triggers_detection_filter() {
+        let exact = input_process(48, "us.zoom.xos");
+        let helper = input_process(49, "us.zoom.xos.helper");
+
+        assert_eq!(exact.app_label, "Zoom");
+        assert_eq!(helper.app_label, "Zoom");
+        assert_eq!(allowed_pids(&[exact, helper]), vec![48, 49]);
+    }
+
+    #[test]
     fn unlisted_mic_process_does_not_trigger_detection_filter() {
         assert!(allowed_pids(&[
-            input_process(50, "us.zoom.xos"),
             input_process(51, "com.apple.FaceTime"),
             input_process(52, "com.google.ChromeRemoteDesktop"),
+            input_process(53, "com.apple.WebKit.WebContent"),
         ])
         .is_empty());
     }
@@ -609,7 +663,7 @@ mod tests {
     fn detector_clears_when_allowed_mic_process_becomes_unlisted() {
         let mut state = MeetingDetectionState::default();
         let active_allowed = allowed_pids(&[input_process(60, "com.google.Chrome")]);
-        let active_unlisted = allowed_pids(&[input_process(61, "us.zoom.xos")]);
+        let active_unlisted = allowed_pids(&[input_process(61, "com.apple.FaceTime")]);
 
         assert_eq!(
             state.update(!active_allowed.is_empty(), false),
