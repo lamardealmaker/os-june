@@ -48,7 +48,7 @@ pub struct HotkeyStatus {
 
 /// Position the HUD remembers between dictation sessions in the same process.
 /// Intentionally process-scoped, not disk-persisted: every fresh launch of
-/// Scribe should put the pill back at bottom-center, but within a single run
+/// Scribe should put the pill back at top-center, but within a single run
 /// the user's drag-to-corner choice should stick.
 pub struct HudPosition {
     inner: Mutex<Option<(i32, i32)>>,
@@ -1792,7 +1792,7 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 
     // Restore the in-memory drag position if it's still on-screen. This
     // doesn't persist across app restarts — that's deliberate; quitting
-    // Scribe resets the HUD to bottom-center so it can't end up lost on a
+    // Scribe resets the HUD to top-center so it can't end up lost on a
     // monitor that's no longer connected.
     if let Some(state) = app.try_state::<HudPosition>() {
         let saved = state.inner.lock().ok().and_then(|guard| *guard);
@@ -1810,11 +1810,11 @@ fn position_hud_window(app: &AppHandle, hud: &WebviewWindow) {
 }
 
 fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> Option<(i32, i32)> {
-    const HUD_BOTTOM_MARGIN: i32 = 12;
+    const HUD_TOP_MARGIN: i32 = 12;
     // The pill is much smaller than the window — the window is intentionally
     // padded with transparent space so the box-shadow has room to fall off
-    // softly. We anchor the *pill* at bottom-center, not the window, which
-    // means accounting for the gap below the pill (half the window's slack).
+    // softly. We anchor the *pill* at top-center, not the window, which
+    // means accounting for the gap above the pill (half the window's slack).
     const PILL_HEIGHT: i32 = 30;
 
     let monitor = hud
@@ -1825,12 +1825,12 @@ fn default_hud_position(hud: &WebviewWindow, window_size: PhysicalSize<u32>) -> 
         .or_else(|| hud.primary_monitor().ok().flatten())?;
 
     let work_area = monitor.work_area();
-    let work_bottom = work_area.position.y + work_area.size.height as i32;
+    let work_top = work_area.position.y;
     let work_center_x = work_area.position.x + work_area.size.width as i32 / 2;
 
     // The pill is centered inside the window (CSS `place-items: center` on
     // body), so window_top = pill_center - window_height/2.
-    let pill_center_y = work_bottom - HUD_BOTTOM_MARGIN - PILL_HEIGHT / 2;
+    let pill_center_y = work_top + HUD_TOP_MARGIN + PILL_HEIGHT / 2;
     let x = work_center_x - window_size.width as i32 / 2;
     let y = pill_center_y - window_size.height as i32 / 2;
     Some((x, y))
