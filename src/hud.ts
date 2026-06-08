@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { spinners } from "unicode-animations";
 import {
@@ -12,6 +12,7 @@ import {
   LIVE_WAVE_OPTIONS,
   withWaveLayers,
 } from "./lib/audio-meter";
+import { MEETING_START_TRANSCRIPTION_EVENT } from "./lib/events";
 import "./styles/hud.css";
 
 type DictationHudEvent = {
@@ -32,11 +33,14 @@ const bars = Array.from(document.querySelectorAll<HTMLElement>(".hud-bar"));
 const brailleNode = document.querySelector<HTMLElement>("#hud-braille");
 const errorText = document.querySelector<HTMLElement>("#hud-error-text");
 const stopButton = document.querySelector<HTMLButtonElement>("#hud-stop");
+const meetingStartButton =
+  document.querySelector<HTMLButtonElement>("#hud-meeting-start");
 const statusText = document.querySelector<HTMLElement>("#hud-status");
 
 let hideTimer: number | undefined;
 let brailleTimer: number | undefined;
 let brailleFrame = 0;
+let meetingPromptSuppressed = false;
 
 // waverows shows multiple horizontal rows of dots flowing across — reads as a
 // "thinking/processing" texture rather than a single dot bouncing.
@@ -118,7 +122,7 @@ function setHud(state: string, status: string) {
     hud.offsetWidth;
     if (state === "meeting") {
       clearStopHover();
-      clearPillBounds();
+      pushPillBoundsToNative();
     } else {
       pushPillBoundsToNative();
     }
@@ -284,7 +288,7 @@ async function showHud() {
   hud?.offsetWidth;
   if (hud?.dataset.state === "meeting") {
     clearStopHover();
-    clearPillBounds();
+    pushPillBoundsToNative();
   } else {
     pushPillBoundsToNative();
     pushStopBoundsToNative();
@@ -385,17 +389,18 @@ async function handleMeetingDetectionEventPayload(payload: unknown) {
   if (!meetingEvent) return;
 
   if (meetingEvent.type === "meeting_detected") {
+    if (meetingPromptSuppressed) return;
     if (!canShowMeetingPrompt(hud?.dataset.state)) return;
-    setHud("meeting", "Start transcription");
+    setHud("meeting", "Meeting detected");
     await showHud();
     return;
   }
 
-  if (
-    meetingEvent.type === "meeting_cleared" &&
-    hud?.dataset.state === "meeting"
-  ) {
-    void hideHud();
+  if (meetingEvent.type === "meeting_cleared") {
+    meetingPromptSuppressed = false;
+    if (hud?.dataset.state === "meeting") {
+      void hideHud();
+    }
   }
 }
 
@@ -442,6 +447,23 @@ stopButton?.addEventListener("click", async (event) => {
   } catch {
     void hideHud();
   }
+});
+
+meetingStartButton?.addEventListener("click", async (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  if (hud?.dataset.state !== "meeting") return;
+
+  meetingPromptSuppressed = true;
+  meetingStartButton.disabled = true;
+  try {
+    await emit(MEETING_START_TRANSCRIPTION_EVENT);
+  } catch {
+    // The main window owns recording errors; the HUD should never block clicks.
+  }
+  void hideHud().finally(() => {
+    meetingStartButton.disabled = false;
+  });
 });
 
 void listen("dictation-event", async (event) => {

@@ -5,6 +5,7 @@ type TauriListener = (event: { payload: unknown }) => unknown;
 const mocks = vi.hoisted(() => ({
   listeners: new Map<string, TauriListener>(),
   hide: vi.fn().mockResolvedValue(undefined),
+  emit: vi.fn().mockResolvedValue(undefined),
   invoke: vi.fn().mockResolvedValue(undefined),
   listen: vi.fn((event: string, listener: TauriListener) => {
     mocks.listeners.set(event, listener);
@@ -19,6 +20,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 vi.mock("@tauri-apps/api/event", () => ({
+  emit: mocks.emit,
   listen: mocks.listen,
 }));
 
@@ -47,13 +49,38 @@ describe("meeting detection HUD", () => {
     });
 
     expect(hudElement().dataset.state).toBe("meeting");
-    expect(document.querySelector("#hud-meeting-text")).toHaveTextContent(
-      "Start transcription",
+    expect(document.querySelector("#hud-meeting-label")).toHaveTextContent(
+      "Meeting detected",
+    );
+    expect(document.querySelector("#hud-meeting-start")).toHaveTextContent(
+      "Start Transcription",
     );
     expect(mocks.show).toHaveBeenCalledOnce();
-    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_pill_bounds", {
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_stop_bounds", {
       rect: null,
     });
+    expect(mocks.invoke).toHaveBeenCalledWith("dictation_hud_set_pill_bounds", {
+      rect: { bottom: 0, left: 0, right: 0, top: 0 },
+    });
+  });
+
+  it("emits a start transcription request when the button is clicked", async () => {
+    vi.useFakeTimers();
+    await loadHud();
+    await emit("meeting-detection-event", { type: "meeting_detected" });
+
+    document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.click();
+
+    await Promise.resolve();
+    expect(mocks.emit).toHaveBeenCalledWith(
+      "scribe://meeting-start-transcription",
+    );
+    await vi.runAllTimersAsync();
+    expect(mocks.hide).toHaveBeenCalledOnce();
+    expect(
+      document.querySelector<HTMLButtonElement>("#hud-meeting-start")?.disabled,
+    ).toBe(false);
+    vi.useRealTimers();
   });
 
   it("clears the prompt when microphone usage stops", async () => {
@@ -114,7 +141,8 @@ function hudMarkup() {
         <span class="hud-error-mark" aria-hidden="true"></span>
       </div>
       <span id="hud-error-text" class="hud-error-text" aria-hidden="true"></span>
-      <span id="hud-meeting-text" class="hud-meeting-text">Start transcription</span>
+      <span id="hud-meeting-label" class="hud-meeting-label">Meeting detected</span>
+      <button id="hud-meeting-start" class="hud-meeting-start" type="button">Start Transcription</button>
       <button id="hud-stop" class="hud-stop" type="button" aria-label="Stop dictation">
         <span class="hud-stop-glyph" aria-hidden="true"></span>
       </button>
