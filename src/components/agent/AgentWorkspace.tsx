@@ -72,6 +72,14 @@ import {
   titleFromPrompt,
 } from "../../lib/hermes-adapter";
 import {
+  AGENT_DELETE_SESSION_EVENT,
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_NEW_SESSION_PENDING_KEY,
+  AGENT_SESSIONS_CHANGED_EVENT,
+  dispatchAgentSessionStatus,
+  type AgentSessionStatusKind,
+} from "../../lib/agent-events";
+import {
   HermesGatewayClient,
   type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
@@ -94,15 +102,18 @@ const AGENT_TITLE_TIMEOUT_MS = 2500;
 
 type AgentPanel = "chat" | "skills" | "messaging";
 
-export const AGENT_NEW_SESSION_EVENT = "scribe:agent:new-session";
-export const AGENT_DELETE_SESSION_EVENT = "scribe:agent:delete-session";
-export const AGENT_SESSIONS_CHANGED_EVENT = "scribe:agent:sessions-changed";
-export const AGENT_NEW_SESSION_PENDING_KEY = "scribe:agent:new-session-pending";
+export {
+  AGENT_DELETE_SESSION_EVENT,
+  AGENT_NEW_SESSION_EVENT,
+  AGENT_NEW_SESSION_PENDING_KEY,
+  AGENT_SESSIONS_CHANGED_EVENT,
+};
 
 export type AgentSessionsChangedDetail = {
   sessions: HermesSessionInfo[];
   selectedSessionId?: string;
   workingSessionIds: string[];
+  waitingSessionIds?: string[];
 };
 
 export type AgentNewSessionDetail = {
@@ -180,6 +191,9 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
   const [workingSessionIds, setWorkingSessionIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<
     Record<string, string>
   >({});
@@ -230,6 +244,21 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       setWorkingSessionIds((current) => {
         const next = new Set(current);
         if (working) {
+          next.add(sessionId);
+        } else {
+          next.delete(sessionId);
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const setSessionWaiting = useCallback(
+    (sessionId: string, waiting: boolean) => {
+      setWaitingSessionIds((current) => {
+        const next = new Set(current);
+        if (waiting) {
           next.add(sessionId);
         } else {
           next.delete(sessionId);
@@ -352,11 +381,17 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
             sessions: hermesSessionItems,
             selectedSessionId: selectedHermesSessionId,
             workingSessionIds: Array.from(workingSessionIds),
+            waitingSessionIds: Array.from(waitingSessionIds),
           },
         },
       ),
     );
-  }, [hermesSessionItems, selectedHermesSessionId, workingSessionIds]);
+  }, [
+    hermesSessionItems,
+    selectedHermesSessionId,
+    waitingSessionIds,
+    workingSessionIds,
+  ]);
 
   useEffect(() => {
     function handleNewSession(event: Event) {
@@ -378,6 +413,11 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       setHermesSessionMessages((current) => omitRecordKey(current, sessionId));
       setPendingHermesMessages((current) => omitRecordKey(current, sessionId));
       setWorkingSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      setWaitingSessionIds((current) => {
         const next = new Set(current);
         next.delete(sessionId);
         return next;
@@ -422,6 +462,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         void suggestTitleForUntitledSession(selectedHermesSessionId, messages);
         if (sessionHasAssistantAfterLatestUser(messages)) {
           setSessionWorking(selectedHermesSessionId, false);
+          setSessionWaiting(selectedHermesSessionId, false);
           liveEventsRef.current = {
             ...liveEventsRef.current,
             [selectedHermesSessionId]: [],
@@ -642,6 +683,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       created?.stored_session_id ??
       created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    const sessionDisplayTitle = sessionTitle ?? titleFromPrompt(content);
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
@@ -674,7 +716,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       return [
         {
           id: storedSessionId,
-          title: sessionTitle ?? titleFromPrompt(content),
+          title: sessionDisplayTitle,
           preview: content,
           started_at: createdAt,
           last_active: createdAt,
@@ -696,6 +738,14 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       ],
     }));
     setSessionWorking(storedSessionId, true);
+    setSessionWaiting(storedSessionId, false);
+    dispatchAgentSessionStatus({
+      sessionId: storedSessionId,
+      title: sessionDisplayTitle,
+      prompt: content,
+      status: "running",
+      summary: "June is working.",
+    });
     const unlisten = gateway.onEvent((event) => {
       if (
         event.session_id !== runtimeSessionId &&
@@ -712,9 +762,26 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
         [storedSessionId]: nextSessionEvents,
       };
       setLiveEvents(liveEventsRef.current);
+      const status = agentStatusFromHermesEvent(event);
+      if (status === "waitingForUser") {
+        setSessionWorking(storedSessionId, false);
+        setSessionWaiting(storedSessionId, true);
+      } else if (status === "running") {
+        setSessionWaiting(storedSessionId, false);
+        setSessionWorking(storedSessionId, true);
+      }
+      if (status) {
+        dispatchAgentSessionStatus({
+          sessionId: storedSessionId,
+          title: sessionDisplayTitle,
+          status,
+          summary: agentStatusSummaryFromHermesEvent(event, status),
+        });
+      }
       if (isTerminalHermesEvent(event.type)) {
         unlisten();
         setSessionWorking(storedSessionId, false);
+        setSessionWaiting(storedSessionId, false);
         window.setTimeout(() => {
           void refreshHermesSession(storedSessionId);
         }, 300);
@@ -729,6 +796,13 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     } catch (err) {
       unlisten();
       setSessionWorking(storedSessionId, false);
+      setSessionWaiting(storedSessionId, false);
+      dispatchAgentSessionStatus({
+        sessionId: storedSessionId,
+        title: sessionDisplayTitle,
+        status: "failed",
+        summary: messageFromError(err),
+      });
       throw err;
     }
   }
@@ -848,6 +922,7 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
       void suggestTitleForUntitledSession(sessionId, messages);
       if (sessionHasAssistantAfterLatestUser(messages)) {
         setSessionWorking(sessionId, false);
+        setSessionWaiting(sessionId, false);
         liveEventsRef.current = { ...liveEventsRef.current, [sessionId]: [] };
         setLiveEvents(liveEventsRef.current);
       }
@@ -945,6 +1020,12 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     const initialPrompt = prompt?.trim() ?? "";
     setDraft(initialPrompt);
     if (!initialPrompt) return;
+    dispatchAgentSessionStatus({
+      prompt: initialPrompt,
+      title: titleFromPrompt(initialPrompt),
+      status: "starting",
+      summary: "Starting June.",
+    });
     setSubmitting(true);
     try {
       await submitHermesSession(initialPrompt);
@@ -953,6 +1034,12 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
     } catch (err) {
       setDraft(initialPrompt);
       setError(messageFromError(err));
+      dispatchAgentSessionStatus({
+        prompt: initialPrompt,
+        title: titleFromPrompt(initialPrompt),
+        status: "failed",
+        summary: messageFromError(err),
+      });
     } finally {
       setSubmitting(false);
     }
@@ -1160,8 +1247,16 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
             <header className="agent-detail-header">
               <div className="agent-detail-title">
                 <ActivityIndicator
-                  active={workingSessionIds.has(selectedHermesSessionId)}
+                  active={
+                    workingSessionIds.has(selectedHermesSessionId) ||
+                    waitingSessionIds.has(selectedHermesSessionId)
+                  }
                   large
+                  status={
+                    waitingSessionIds.has(selectedHermesSessionId)
+                      ? "waitingForUser"
+                      : "running"
+                  }
                 />
                 <div>
                   <h2>
@@ -1169,6 +1264,11 @@ export function AgentWorkspace({ initialSession }: AgentWorkspaceProps = {}) {
                       selectedHermesSession?.preview ||
                       "Untitled session"}
                   </h2>
+                  {waitingSessionIds.has(selectedHermesSessionId) ? (
+                    <p>Needs your input.</p>
+                  ) : workingSessionIds.has(selectedHermesSessionId) ? (
+                    <p>Working now.</p>
+                  ) : null}
                 </div>
               </div>
             </header>
@@ -3251,6 +3351,57 @@ function isTerminalHermesEvent(type: string) {
   );
 }
 
+function agentStatusFromHermesEvent(
+  event: HermesGatewayEvent,
+): AgentSessionStatusKind | undefined {
+  if (event.type === "error") return "failed";
+  if (event.type === "clarify.request" || event.type === "approval.request") {
+    return "waitingForUser";
+  }
+  if (event.type === "clarify.response" || event.type === "approval.response") {
+    return "running";
+  }
+  if (isTerminalHermesEvent(event.type)) return "completed";
+  if (
+    event.type === "message.start" ||
+    event.type === "thinking.delta" ||
+    event.type === "reasoning.delta" ||
+    event.type === "status.update" ||
+    event.type.startsWith("tool.")
+  ) {
+    return "running";
+  }
+  return undefined;
+}
+
+function agentStatusSummaryFromHermesEvent(
+  event: HermesGatewayEvent,
+  status: AgentSessionStatusKind,
+) {
+  if (status === "waitingForUser") {
+    return event.type === "approval.request"
+      ? "June needs approval."
+      : "June has a question.";
+  }
+  if (status === "completed") return "June finished.";
+  if (status === "failed") return eventText(event) || "June hit a problem.";
+  if (event.type === "status.update") {
+    return eventText(event) || "June is working.";
+  }
+  if (event.type.startsWith("tool.")) {
+    const payload = event.payload as Record<string, unknown> | undefined;
+    const name =
+      stringValue(payload?.name) ??
+      stringValue(payload?.tool_name) ??
+      stringValue(payload?.tool);
+    return name ? `Using ${humanizeToolName(name)}.` : "Using a tool.";
+  }
+  if (event.type === "thinking.delta" || event.type === "reasoning.delta") {
+    return "Thinking.";
+  }
+  return "June is working.";
+}
+
 function visibleHermesMessageText(message: HermesSessionMessage) {
   const text =
     textFromHermesValue(message.content) ??
@@ -3358,15 +3509,21 @@ function StatusPill({
 function ActivityIndicator({
   active,
   large = false,
+  status = "running",
 }: {
   active: boolean;
   large?: boolean;
+  status?: "running" | "waitingForUser";
 }) {
   if (!active) return null;
   return (
-    <span className="agent-activity-indicator" data-large={large}>
+    <span
+      className="agent-activity-indicator"
+      data-large={large}
+      data-status={status}
+    >
       <span aria-hidden="true" />
-      Working
+      {status === "waitingForUser" ? "Needs you" : "Working"}
     </span>
   );
 }
