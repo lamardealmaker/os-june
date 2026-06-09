@@ -124,12 +124,14 @@ fn position_mascot_window_with_size(
     const MARGIN_Y: f64 = 14.0;
 
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
+    // Pin the mascot to the primary monitor; picking the monitor from the
+    // cursor made it hop between displays whenever a layout change fired
+    // while the mouse was on another screen.
     let monitor = window
-        .cursor_position()
+        .primary_monitor()
         .ok()
-        .and_then(|cursor| window.monitor_from_point(cursor.x, cursor.y).ok().flatten())
-        .or_else(|| window.current_monitor().ok().flatten())
-        .or_else(|| window.primary_monitor().ok().flatten());
+        .flatten()
+        .or_else(|| window.current_monitor().ok().flatten());
     let Some(monitor) = monitor else {
         return Ok(());
     };
