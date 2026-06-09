@@ -66,6 +66,7 @@ const state = {
 };
 
 let lastLayoutKey = "";
+let lastStackKey = "";
 let pruneTimer: number | undefined;
 
 function applySessionsChanged(detail?: AgentSessionsChangedDetail) {
@@ -178,9 +179,29 @@ function render() {
   mascot.dataset.expanded = expanded ? "true" : "false";
   mascot.dataset.active = active ? "true" : "false";
   mascot.dataset.hasEntries = hasEntries ? "true" : "false";
-  stack.replaceChildren();
-  if (expanded) {
-    for (const entry of entries) stack.appendChild(renderCard(entry));
+  // Only rebuild the cards when their visible content changes. Status events
+  // arrive in bursts while a session works; recreating identical nodes on
+  // each one restarts CSS animations (the status spinner) and reads as
+  // flicker.
+  const stackKey = expanded
+    ? entries
+        .map((entry) =>
+          [
+            entry.id,
+            entry.title,
+            entry.summary,
+            entry.status,
+            state.replyingEntryId === entry.id ? "replying" : "",
+          ].join("\u0001"),
+        )
+        .join("\u0002")
+    : "collapsed";
+  if (stackKey !== lastStackKey) {
+    lastStackKey = stackKey;
+    stack.replaceChildren();
+    if (expanded) {
+      for (const entry of entries) stack.appendChild(renderCard(entry));
+    }
   }
   stack.setAttribute("aria-hidden", expanded ? "false" : "true");
   toggle.hidden = !hasEntries;
@@ -362,7 +383,11 @@ function sessionStatus(
   session: HermesSessionInfo,
   record?: StatusRecord,
 ): MascotSessionStatus {
-  if (record && isTerminalStatus(record.status) && !isExpiredTerminalRecord(record)) {
+  if (
+    record &&
+    isTerminalStatus(record.status) &&
+    !isExpiredTerminalRecord(record)
+  ) {
     return record.status;
   }
   if (state.waitingSessionIds.has(session.id)) return "waitingForUser";
@@ -460,7 +485,8 @@ function pruneOldStatuses() {
   state.pendingStatuses = state.pendingStatuses.filter(
     (record) =>
       isActiveStatus(record.status) ||
-      (isTerminalStatus(record.status) && !isExpiredTerminalRecord(record, now)),
+      (isTerminalStatus(record.status) &&
+        !isExpiredTerminalRecord(record, now)),
   );
   for (const [id, record] of state.statusBySessionId) {
     if (isExpiredTerminalRecord(record, now)) {
