@@ -357,10 +357,14 @@ describe("AppSettings", () => {
       name: "Default transcription language",
     });
 
-    await user.selectOptions(language, "id");
+    expect(screen.getByRole("option", { name: "Vietnamese" })).toHaveValue(
+      "vi",
+    );
 
-    expect(mocks.setDictationLanguage).toHaveBeenCalledWith("id");
-    await waitFor(() => expect(language).toHaveValue("id"));
+    await user.selectOptions(language, "vi");
+
+    expect(mocks.setDictationLanguage).toHaveBeenCalledWith("vi");
+    await waitFor(() => expect(language).toHaveValue("vi"));
   });
 
   it("lists system permissions with status and manage actions", async () => {
