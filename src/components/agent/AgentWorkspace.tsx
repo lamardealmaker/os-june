@@ -241,6 +241,10 @@ export function AgentWorkspace({
     Record<string, string>
   >({});
   const gatewayRef = useRef<HermesGatewayClient | null>(null);
+  // One live gateway subscription per Hermes session. A follow-up send while
+  // the previous turn is still streaming must replace the old handler, not
+  // stack a second one — otherwise every event lands twice in liveEvents.
+  const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
   const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   const handledMascotReplyIdsRef = useRef<Set<string>>(new Set());
@@ -748,10 +752,12 @@ export function AgentWorkspace({
     setAttachments([]);
     try {
       await submitHermesSession(content);
-      setAttachments([]);
       setError(null);
     } catch (err) {
+      // Restore the composer so a failed send doesn't eat the message or
+      // its attachments.
       setDraft(message);
+      setAttachments(attachments);
       setError(messageFromError(err));
     } finally {
       setSubmitting(false);
@@ -972,7 +978,8 @@ export function AgentWorkspace({
       status: "running",
       summary: "June is working.",
     });
-    const unlisten = gateway.onEvent((event) => {
+    sessionGatewayUnlistenRef.current.get(storedSessionId)?.();
+    const removeListener = gateway.onEvent((event) => {
       if (
         event.session_id !== runtimeSessionId &&
         event.session_id !== storedSessionId
@@ -1019,6 +1026,13 @@ export function AgentWorkspace({
         }, 300);
       }
     });
+    const unlisten = () => {
+      removeListener();
+      if (sessionGatewayUnlistenRef.current.get(storedSessionId) === unlisten) {
+        sessionGatewayUnlistenRef.current.delete(storedSessionId);
+      }
+    };
+    sessionGatewayUnlistenRef.current.set(storedSessionId, unlisten);
     try {
       await gateway.request("prompt.submit", {
         session_id: runtimeSessionId,
@@ -1765,6 +1779,10 @@ export function AgentWorkspace({
                   }
                   rows={1}
                   onKeyDown={(event) => {
+                    // Ignore the Enter that commits an IME composition
+                    // (Japanese/Chinese/Korean input) — only a real Enter
+                    // press should send the message.
+                    if (event.nativeEvent.isComposing) return;
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
                       event.currentTarget.form?.requestSubmit();
