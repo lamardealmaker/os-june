@@ -210,12 +210,15 @@ fn show_main_window(app: &AppHandle) {
 
 fn tray_title(state: &AgentMenuBarState) -> String {
     if state.needs_user_count > 0 {
-        return format!("June {}", state.needs_user_count);
+        return counted_status_title("Needs Approval", state.needs_user_count);
     }
     if state.active_count > 0 {
-        return format!("June {}", state.active_count);
+        return counted_status_title("Working...", state.active_count);
     }
-    "June".to_string()
+    if let Some(last_status) = state.last_status.as_ref() {
+        return status_title(&last_status.status).to_string();
+    }
+    "Ready".to_string()
 }
 
 fn tray_tooltip(state: &AgentMenuBarState) -> String {
@@ -226,19 +229,19 @@ fn tray_tooltip(state: &AgentMenuBarState) -> String {
 fn status_label(state: &AgentMenuBarState) -> String {
     if state.needs_user_count > 0 {
         let waiting = pluralize(state.needs_user_count, "session", "sessions");
-        let needs_input = if state.needs_user_count == 1 {
-            "needs input"
+        let needs_approval = if state.needs_user_count == 1 {
+            "needs approval"
         } else {
-            "need input"
+            "need approval"
         };
         if state.active_count > state.needs_user_count {
             let working_count = state.active_count - state.needs_user_count;
             return format!(
-                "{waiting} {needs_input}, {} working",
+                "{waiting} {needs_approval}, {} working",
                 pluralize(working_count, "session", "sessions")
             );
         }
-        return format!("{waiting} {needs_input}");
+        return format!("{waiting} {needs_approval}");
     }
     if state.active_count > 0 {
         return format!(
@@ -278,7 +281,7 @@ fn session_label(session: &AgentMenuBarSession) -> String {
         title
     };
     let prefix = match session.status {
-        AgentMenuBarSessionStatus::WaitingForUser => "Needs input - ",
+        AgentMenuBarSessionStatus::WaitingForUser => "Needs Approval - ",
         AgentMenuBarSessionStatus::Running => "Working - ",
         AgentMenuBarSessionStatus::Idle => "",
     };
@@ -299,11 +302,31 @@ fn readable_status(status: &str) -> &'static str {
         "received" => "Received",
         "starting" => "Starting",
         "running" => "Working",
-        "waitingForUser" => "Needs input",
+        "waitingForUser" => "Needs Approval",
         "completed" => "Completed",
         "failed" => "Failed",
         "cancelled" => "Cancelled",
         _ => "Updated",
+    }
+}
+
+fn status_title(status: &str) -> &'static str {
+    match status {
+        "received" | "starting" => "Starting...",
+        "running" => "Working...",
+        "waitingForUser" => "Needs Approval",
+        "completed" => "Done",
+        "failed" => "Failed",
+        "cancelled" => "Cancelled",
+        _ => "Ready",
+    }
+}
+
+fn counted_status_title(label: &str, count: usize) -> String {
+    if count <= 1 {
+        label.to_string()
+    } else {
+        format!("{label} ({count})")
     }
 }
 
@@ -321,4 +344,46 @@ fn normalize_menu_text(value: &str) -> String {
 
 fn escape_menu_text(value: String) -> String {
     value.replace('&', "&&")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_title_uses_agent_status_instead_of_brand_name() {
+        assert_eq!(tray_title(&AgentMenuBarState::default()), "Ready");
+        assert_eq!(tray_title(&state(1, 0, None)), "Working...");
+        assert_eq!(tray_title(&state(3, 0, None)), "Working... (3)");
+        assert_eq!(tray_title(&state(1, 1, None)), "Needs Approval");
+        assert_eq!(tray_title(&state(4, 2, None)), "Needs Approval (2)");
+    }
+
+    #[test]
+    fn tray_title_falls_back_to_last_live_status() {
+        assert_eq!(tray_title(&state(0, 0, Some("starting"))), "Starting...");
+        assert_eq!(tray_title(&state(0, 0, Some("running"))), "Working...");
+        assert_eq!(
+            tray_title(&state(0, 0, Some("waitingForUser"))),
+            "Needs Approval"
+        );
+        assert_eq!(tray_title(&state(0, 0, Some("completed"))), "Done");
+    }
+
+    fn state(
+        active_count: usize,
+        needs_user_count: usize,
+        last_status: Option<&str>,
+    ) -> AgentMenuBarState {
+        AgentMenuBarState {
+            active_count,
+            needs_user_count,
+            last_status: last_status.map(|status| AgentMenuBarLastStatus {
+                title: None,
+                status: status.to_string(),
+                summary: None,
+            }),
+            ..AgentMenuBarState::default()
+        }
+    }
 }
