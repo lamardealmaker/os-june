@@ -315,7 +315,7 @@ describe("AgentWorkspace", () => {
     const initialSessionListCalls = mocks.listHermesSessions.mock.calls.length;
 
     await user.type(screen.getByRole("textbox"), "follow up while pending");
-    await user.click(screen.getByRole("button", { name: "Send" }));
+    await user.click(screen.getByRole("button", { name: "Send message" }));
     await waitFor(() =>
       expect(mocks.ensureHermesBridgeSession).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -336,7 +336,7 @@ describe("AgentWorkspace", () => {
         session_id: "runtime-session-1",
         text: "follow up while pending",
       });
-      expect(screen.getByText("Working now.")).toBeInTheDocument();
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
       expect(mocks.listHermesSessions).toHaveBeenCalledTimes(
         initialSessionListCalls + 1,
       );
@@ -348,7 +348,7 @@ describe("AgentWorkspace", () => {
       });
 
       expect(screen.getByText("follow up while pending")).toBeInTheDocument();
-      expect(screen.getByText("Working now.")).toBeInTheDocument();
+      expect(screen.getByText("Thinking…")).toBeInTheDocument();
       expect(mocks.listHermesSessions).toHaveBeenCalledTimes(
         sessionListCallsAfterSubmit + 1,
       );
@@ -468,10 +468,12 @@ describe("AgentWorkspace", () => {
       document.querySelector(".agent-attachment-chip img"),
     ).toHaveAttribute("src", "data:image/png;base64,preview");
     await user.type(
-      screen.getByPlaceholderText("Send a follow-up"),
+      screen.getByPlaceholderText("Send a message"),
       "what is in this image?",
     );
-    await user.click(screen.getByRole("button", { name: /send/i }));
+    const sendButton = screen.getByRole("button", { name: "Send message" });
+    await waitFor(() => expect(sendButton).not.toBeDisabled());
+    await user.click(sendButton);
 
     await waitFor(() =>
       expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
