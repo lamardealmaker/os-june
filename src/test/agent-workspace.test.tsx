@@ -528,6 +528,109 @@ describe("AgentWorkspace", () => {
     expect(mocks.gatewayEventHandlers.size).toBe(0);
   });
 
+  it("explains a pending approval before the user chooses", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-1",
+            description: "Security scan requires approval.",
+            command: "npm run build",
+            allow_permanent: true,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Explain first" }));
+
+    expect(
+      screen.getByText(
+        "June is paused because this request needs your explicit permission before it can continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approve once allows only this request/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Always allows matching requests in future sessions/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Hide explanation" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve once" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Always" })).toBeEnabled();
+    expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
+      "approval.respond",
+      expect.anything(),
+    );
+  });
+
+  it("omits the permanent approval explanation when Always is unavailable", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "inspect the repo",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "inspect the repo",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-2",
+            description: "Repository inspection requires approval.",
+            command: "git status",
+            allow_permanent: false,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Explain first" }));
+
+    expect(
+      screen.getByText(/Approve once allows only this request/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Always allows matching requests in future sessions/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Always" })).toBeNull();
+  });
+
   it("creates a fresh Hermes session for a New Session prompt when an initial session is selected", async () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
