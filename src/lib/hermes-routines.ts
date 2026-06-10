@@ -70,7 +70,10 @@ export async function listRoutines(): Promise<RoutineJob[]> {
   return response.jobs ?? [];
 }
 
-/** The gateway's `cron.manage` reads the job reference from `name`. */
+/** The gateway's `cron.manage` reads the job reference from the wire param
+ * `name` and resolves it as ID-or-name with exact ID match winning (Hermes
+ * `resolve_job_ref`). Send the unique `job_id`, never the display name — two
+ * routines can share a name, which Hermes rejects as ambiguous. */
 export function pauseRoutine(jobId: string) {
   return manageRoutines({ action: "pause", name: jobId });
 }
