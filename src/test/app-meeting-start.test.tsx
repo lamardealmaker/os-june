@@ -148,6 +148,7 @@ describe("meeting start transcription event", () => {
       configured: true,
       user: { id: "usr_123", handle: "junho", email: "junho@example.com" },
       balance: { usdMillis: 1200 },
+      subscription: { subscribed: true, status: "active" },
     };
 
     mocks.getCurrentWindow.mockReturnValue({
