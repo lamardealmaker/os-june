@@ -4115,8 +4115,11 @@ function ApprovalPart({
             </p>
             <p>
               Approve once allows only this request. This session allows
-              matching requests until the session ends. Always allows matching
-              requests in future sessions. Deny blocks the request.
+              matching requests until the session ends.{" "}
+              {part.allowPermanent
+                ? "Always allows matching requests in future sessions. "
+                : null}
+              Deny blocks the request.
             </p>
           </div>
         ) : null}
