@@ -326,7 +326,7 @@ export function App() {
           setUpdateProgress(null);
           setPendingUpdate(payload);
         },
-        reportNoUpdate: () => setUpdateStatus("OS June is up to date."),
+        reportNoUpdate: () => setUpdateStatus("June is up to date."),
         reportFailure: (message) =>
           setUpdateStatus(`Update check failed: ${message}`),
       },
@@ -817,7 +817,7 @@ export function App() {
 
   // Refresh permission state whenever the app regains focus — covers the
   // common case where the user flipped a toggle in System Settings and
-  // returns to OS Scribe. The helper poll is what surfaces fresh mic /
+  // returns to June. The helper poll is what surfaces fresh mic /
   // accessibility state via the dictation-event listener above.
   useEffect(() => {
     if (appBlocked) return;
@@ -1974,7 +1974,7 @@ function UpdateDialog({
     <Dialog
       open={!!payload || !!status}
       onClose={onClose}
-      title={payload ? `OS June ${payload.version}` : "Software update"}
+      title={payload ? `June ${payload.version}` : "Software update"}
       description={
         payload
           ? "A new version is available."
