@@ -29,8 +29,10 @@ const mocks = vi.hoisted(() => ({
   hermesBridgeToolsets: vi.fn(),
   importHermesBridgeFile: vi.fn(),
   importHermesBridgeFileBytes: vi.fn(),
+  listVeniceModels: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
+  providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
   saveAgentHermesSession: vi.fn(),
@@ -73,8 +75,10 @@ vi.mock("../lib/tauri", () => ({
   hermesBridgeToolsets: mocks.hermesBridgeToolsets,
   importHermesBridgeFile: mocks.importHermesBridgeFile,
   importHermesBridgeFileBytes: mocks.importHermesBridgeFileBytes,
+  listVeniceModels: mocks.listVeniceModels,
   listAgentTasks: mocks.listAgentTasks,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
+  providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
@@ -139,6 +143,29 @@ describe("AgentWorkspace", () => {
     window.sessionStorage.clear();
     window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "zai-org-glm-5",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "zai-org-glm-5",
+      models: [
+        {
+          provider: "venice",
+          id: "zai-org-glm-5",
+          name: "GLM 5",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: [],
+        },
+      ],
+    });
     mocks.getAgentTask.mockResolvedValue(existingTask);
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
@@ -209,6 +236,42 @@ describe("AgentWorkspace", () => {
     expect(
       window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY),
     ).toBeNull();
+  });
+
+  it("labels anonymous-only agent models as anonymous mode", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "anonymous-only",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "anonymous-only",
+      models: [
+        {
+          provider: "venice",
+          id: "anonymous-only",
+          name: "Anonymous Only",
+          modelType: "text",
+          privacy: "anonymous",
+          traits: [],
+          capabilities: [],
+        },
+      ],
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(
+        "Anonymous mode - You're using a model that is anonymizing your prompts but may still train on your data.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
 
   it("ignores a stale pending New Session marker left over from a reload", async () => {

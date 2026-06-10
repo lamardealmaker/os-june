@@ -211,6 +211,18 @@ describe("AppSettings", () => {
                 traits: ["anonymized", "uncensored"],
                 capabilities: [],
               },
+              {
+                provider: "venice",
+                id: "anonymous-only",
+                name: "Anonymous Only",
+                modelType: "text",
+                description: "Anonymizes prompts before upstream inference.",
+                privacy: "anonymous",
+                pricing: { input: { usd: 0.1 }, output: { usd: 0.4 } },
+                contextTokens: 32768,
+                traits: [],
+                capabilities: [],
+              },
             ],
     }));
     mocks.setVeniceModel.mockImplementation(async (mode, modelId) => ({
@@ -912,22 +924,19 @@ describe("AppSettings", () => {
     );
 
     await waitFor(() =>
-      expect(mocks.setDictationShortcut).toHaveBeenCalledWith(
-        "push_to_talk",
-        {
-          keyCode: 0x02,
-          code: "KeyD",
-          label: "Ctrl+Opt+D",
-          pressCount: 1,
-          modifiers: {
-            command: false,
-            control: true,
-            option: true,
-            shift: false,
-            function: false,
-          },
+      expect(mocks.setDictationShortcut).toHaveBeenCalledWith("push_to_talk", {
+        keyCode: 0x02,
+        code: "KeyD",
+        label: "Ctrl+Opt+D",
+        pressCount: 1,
+        modifiers: {
+          command: false,
+          control: true,
+          option: true,
+          shift: false,
+          function: false,
         },
-      ),
+      }),
     );
 
     await waitFor(() =>
@@ -1030,7 +1039,9 @@ describe("AppSettings", () => {
     expect(
       screen.getAllByText("$1.00 input / $3.20 output per 1M tokens").length,
     ).toBeGreaterThan(0);
-    expect(screen.getAllByText("Anon").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Private mode").length).toBeGreaterThan(0);
+    expect(screen.getByText("Anonymous mode")).toBeInTheDocument();
+    expect(screen.queryByText("Anon")).not.toBeInTheDocument();
     await user.click(
       await screen.findByRole("option", { name: /Venice Uncensored/ }),
     );
