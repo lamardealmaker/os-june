@@ -98,8 +98,6 @@ describe("OnboardingFlow", () => {
     await user.click(
       screen.getByRole("button", { name: "Let's get you set up" }),
     );
-    await user.click(screen.getByRole("button", { name: "Founder/CEO" }));
-    await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.click(screen.getByRole("button", { name: "Meeting notes" }));
     await user.click(screen.getByRole("button", { name: "Continue" }));
     // Privacy education + data sharing.
@@ -160,7 +158,6 @@ describe("OnboardingFlow", () => {
     expect(isAgentRiskAcknowledged()).toBe(true);
     expect(isDataSharingEnabled()).toBe(false);
     expect(loadOnboardingProfile()).toEqual({
-      role: "Founder/CEO",
       focus: ["Meeting notes"],
     });
     // Completion is the caller's job (App marks it), not the flow's.
@@ -173,7 +170,6 @@ describe("OnboardingFlow", () => {
     await user.click(
       screen.getByRole("button", { name: "Let's get you set up" }),
     );
-    await user.click(screen.getByRole("button", { name: "Skip for now" }));
     await user.click(screen.getByRole("button", { name: "Skip for now" }));
     await user.click(screen.getByRole("button", { name: "Continue" }));
     await user.click(screen.getByRole("button", { name: "Continue" }));

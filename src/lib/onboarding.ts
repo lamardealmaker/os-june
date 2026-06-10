@@ -13,7 +13,6 @@ const DATA_SHARING_KEY = "june.privacy.shareUsageData";
 const AGENT_ACK_KEY = "june.agent.riskAcknowledged";
 
 export type OnboardingProfile = {
-  role?: string;
   focus: string[];
 };
 
@@ -41,7 +40,6 @@ export function loadOnboardingProfile(): OnboardingProfile {
     if (!raw) return { focus: [] };
     const parsed = JSON.parse(raw) as Partial<OnboardingProfile>;
     return {
-      role: typeof parsed.role === "string" ? parsed.role : undefined,
       focus: Array.isArray(parsed.focus)
         ? parsed.focus.filter(
             (item): item is string => typeof item === "string",

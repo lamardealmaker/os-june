@@ -23,12 +23,11 @@ import {
 } from "./steps/PermissionSteps";
 import { DataSharingStep, PrivacyStep } from "./steps/PrivacySteps";
 import { SetupStep } from "./steps/SetupStep";
-import { FocusStep, RoleStep, WelcomeStep } from "./steps/WelcomeSteps";
+import { FocusStep, WelcomeStep } from "./steps/WelcomeSteps";
 import { usePermissionStatuses } from "./use-permission-status";
 
 type StepId =
   | "welcome"
-  | "role"
   | "focus"
   | "privacy"
   | "data-sharing"
@@ -53,7 +52,6 @@ const STAGES = [
 
 const STEPS: { id: StepId; stage: (typeof STAGES)[number] }[] = [
   { id: "welcome", stage: "Welcome" },
-  { id: "role", stage: "Welcome" },
   { id: "focus", stage: "Welcome" },
   { id: "privacy", stage: "Privacy" },
   { id: "data-sharing", stage: "Privacy" },
@@ -160,12 +158,6 @@ export function OnboardingFlow({ account, onComplete }: Props) {
         ) : null}
         {step.id === "welcome" ? (
           <WelcomeStep name={firstName} onContinue={goNext} />
-        ) : step.id === "role" ? (
-          <RoleStep
-            profile={profile}
-            onProfileChange={handleProfileChange}
-            onContinue={goNext}
-          />
         ) : step.id === "focus" ? (
           <FocusStep
             profile={profile}
