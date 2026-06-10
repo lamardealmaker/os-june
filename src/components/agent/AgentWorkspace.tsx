@@ -32,6 +32,7 @@ import { IconPencilLine } from "central-icons/IconPencilLine";
 import { IconPieChart1 } from "central-icons/IconPieChart1";
 import { IconPlusMedium } from "central-icons/IconPlusMedium";
 import { IconShieldAi } from "central-icons/IconShieldAi";
+import { IconStop } from "central-icons/IconStop";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPangolin } from "../icons/IconPangolin";
 import { PangolinSpinner } from "../PangolinSpinner";
@@ -422,6 +423,9 @@ export function AgentWorkspace({
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<
     Record<string, string>
   >({});
+  const [stoppingSessionIds, setStoppingSessionIds] = useState<
+    ReadonlySet<string>
+  >(new Set());
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[] | null>(null);
   const [messagingPlatforms, setMessagingPlatforms] = useState<
@@ -1710,6 +1714,45 @@ export function AgentWorkspace({
     }
   }
 
+  // Stops a running June turn: interrupts the runtime session over the
+  // gateway, then clears the local working/waiting flags regardless — the
+  // user asked for it to stop, so the UI must not stay "thinking" even when
+  // the RPC fails (gateway drop, runtime session already gone).
+  async function stopHermesSession(sessionId: string) {
+    if (stoppingSessionIds.has(sessionId)) return;
+    setStoppingSessionIds((current) => new Set(current).add(sessionId));
+    try {
+      const runtimeSessionId = runtimeSessionIds[sessionId];
+      if (runtimeSessionId) {
+        const gateway = await ensureHermesGateway();
+        await gateway.request("session.interrupt", {
+          session_id: runtimeSessionId,
+        });
+      }
+    } catch {
+      // Fall through to the local cleanup below.
+    } finally {
+      const activityCounts = clearSessionActivity(sessionId);
+      dispatchAgentSessionStatus({
+        sessionId,
+        title:
+          hermesSessionItems.find((session) => session.id === sessionId)
+            ?.title ?? "Agent session",
+        status: "cancelled",
+        summary: "Stopped.",
+        ...activityCounts,
+      });
+      setStoppingSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      // Pull whatever the agent managed to persist before the interrupt so
+      // the transcript reflects the partial turn.
+      void refreshHermesSession(sessionId);
+    }
+  }
+
   async function retryTask(taskId: string) {
     try {
       upsertTask(await retryAgentTask(taskId));
@@ -2180,6 +2223,21 @@ export function AgentWorkspace({
               }}
             />
             <div className="agent-composer-actions">
+              {selectedHermesSessionId &&
+              workingSessionIds.has(selectedHermesSessionId) ? (
+                <button
+                  type="button"
+                  className="agent-composer-stop"
+                  aria-label="Stop June"
+                  title="Stop June"
+                  disabled={stoppingSessionIds.has(selectedHermesSessionId)}
+                  onClick={() =>
+                    void stopHermesSession(selectedHermesSessionId)
+                  }
+                >
+                  <IconStop size={16} />
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="agent-composer-mic"

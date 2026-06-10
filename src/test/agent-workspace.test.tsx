@@ -253,6 +253,45 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
+  it("stops a working session from the composer", async () => {
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ prompt: "summarize the current page" }),
+    );
+    mocks.listHermesSessions.mockResolvedValue([
+      {
+        id: "session-2",
+        title: "Untitled session",
+        preview: "summarize the current page",
+        last_active: "2026-06-04T12:01:00Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "summarize the current page",
+      }),
+    );
+
+    // The session is now working, so the composer offers a stop control.
+    const stop = await screen.findByRole("button", { name: "Stop June" });
+    await userEvent.click(stop);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("session.interrupt", {
+        session_id: "runtime-session-2",
+      }),
+    );
+    // The working flag clears even before any gateway event arrives, so the
+    // stop control goes away and the session no longer reads as thinking.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull(),
+    );
+  });
+
   it("creates a fresh Hermes session for a New Session prompt when an initial session is selected", async () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
