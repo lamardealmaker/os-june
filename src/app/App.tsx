@@ -627,6 +627,35 @@ export function App() {
     };
   }, []);
 
+  // The detached meeting HUD (shown when the main window is closed/minimized
+  // mid-recording) is a presence indicator, not a control surface: clicking it
+  // emits "reopen", and we bring the window forward and land back on the meeting
+  // being recorded. All recording controls stay in-app.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let aborted = false;
+    void listen<{ action: "reopen" }>("meeting-hud-action", (event) => {
+      if (event.payload?.action !== "reopen") return;
+      const main = getCurrentWindow();
+      void main.show();
+      void main.unminimize();
+      void main.setFocus();
+      const noteId = recordingNoteIdRef.current;
+      if (noteId) {
+        setActiveView("meetings");
+        void handleSelectNote(noteId);
+      }
+    }).then((cleanup) => {
+      // If the listener resolves after unmount, tear it down immediately.
+      if (aborted) cleanup();
+      else unlisten = cleanup;
+    });
+    return () => {
+      aborted = true;
+      unlisten?.();
+    };
+  }, []);
+
   const accessibilityBlocked = isAccessibilityBlocked(accessibilityStatus);
   // The Rust readiness check probes mic via cpal, which doesn't reflect
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
@@ -1069,6 +1098,7 @@ export function App() {
         (source) => source.source === "microphone",
       );
       if (!micSource?.ready) {
+        recordingNoteIdRef.current = undefined;
         dispatch({ type: "recordingStatusCleared" });
         setError(micSource?.message ?? "Microphone is not ready.");
         return;
@@ -1087,12 +1117,16 @@ export function App() {
           : sourceMode;
 
       const recording = await startRecording(selectedNoteId, effectiveMode);
+      recordingNoteIdRef.current = selectedNoteId;
       dispatch({
         type: "recordingStatusChanged",
         status: recordingToStatus(recording),
       });
       playRecordingSound("start");
     } catch (err) {
+      // The ref was set optimistically above; a failed start must not leave
+      // the meeting HUD's reopen path pointing at a note with no recording.
+      recordingNoteIdRef.current = undefined;
       dispatch({ type: "recordingStatusCleared" });
       setError(messageFromError(err));
     } finally {
@@ -1131,6 +1165,7 @@ export function App() {
     // finishes — and the body shimmer ("Transcribing audio…" → "Generating
     // notes…") plus a queued count tell the user work is still in flight.
     dispatch({ type: "recordingStatusCleared" });
+    recordingNoteIdRef.current = undefined;
     playRecordingSound("stop");
     // Optimistically flip the note that owns this recording to transcribing.
     // The selected note isn't necessarily that note — the user may have
