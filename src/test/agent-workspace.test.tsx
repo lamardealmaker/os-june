@@ -15,6 +15,7 @@ import {
   AgentWorkspace,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
+import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
 
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
@@ -272,6 +273,49 @@ describe("AgentWorkspace", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
+  });
+
+  it("refreshes the model privacy label when generation model settings change", async () => {
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Private mode")).toBeInTheDocument();
+
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "anonymous-only",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "anonymous-only",
+      models: [
+        {
+          provider: "venice",
+          id: "anonymous-only",
+          name: "Anonymous Only",
+          modelType: "text",
+          privacy: "anonymous",
+          traits: [],
+          capabilities: [],
+        },
+      ],
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(PROVIDER_MODEL_SETTINGS_CHANGED_EVENT, {
+          detail: { mode: "generation", modelId: "anonymous-only" },
+        }),
+      );
+    });
+
+    expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Private mode")).not.toBeInTheDocument(),
+    );
   });
 
   it("ignores a stale pending New Session marker left over from a reload", async () => {

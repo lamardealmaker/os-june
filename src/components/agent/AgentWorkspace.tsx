@@ -121,8 +121,10 @@ import {
   type HermesGatewayEvent,
 } from "../../lib/hermes-gateway";
 import {
+  PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
   modelPrivacyBadge,
   type ModelPrivacyBadge,
+  type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { messageFromError } from "../../lib/errors";
 import {
@@ -713,7 +715,9 @@ export function AgentWorkspace({
 
   useEffect(() => {
     let cancelled = false;
+    let requestSequence = 0;
     async function loadGenerationPrivacyBadge() {
+      const requestId = ++requestSequence;
       try {
         const [settingsResponse, modelsResponse] = await Promise.all([
           providerModelSettings(),
@@ -725,18 +729,37 @@ export function AgentWorkspace({
         const selectedModel = modelsResponse.models.find(
           (model) => model.id === selectedModelId,
         );
-        if (!cancelled) {
+        if (!cancelled && requestId === requestSequence) {
           setGenerationPrivacyBadge(
             selectedModel ? modelPrivacyBadge(selectedModel) : undefined,
           );
         }
       } catch {
-        if (!cancelled) setGenerationPrivacyBadge(undefined);
+        if (!cancelled && requestId === requestSequence) {
+          setGenerationPrivacyBadge(undefined);
+        }
       }
     }
+    function handleProviderModelSettingsChanged(event: Event) {
+      const { mode } = (
+        event as CustomEvent<ProviderModelSettingsChangedDetail>
+      ).detail;
+      if (mode === "generation") {
+        void loadGenerationPrivacyBadge();
+      }
+    }
+
     void loadGenerationPrivacyBadge();
+    window.addEventListener(
+      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+      handleProviderModelSettingsChanged,
+    );
     return () => {
       cancelled = true;
+      window.removeEventListener(
+        PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+        handleProviderModelSettingsChanged,
+      );
     };
   }, []);
 

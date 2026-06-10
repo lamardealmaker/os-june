@@ -1,4 +1,4 @@
-import type { VeniceModelDto } from "./tauri";
+import type { ProviderModelMode, VeniceModelDto } from "./tauri";
 
 export type ModelPrivacyMode = "private" | "anonymous";
 
@@ -8,6 +8,31 @@ export type ModelPrivacyBadge = {
   description: string;
 };
 
+export type ModelPrivacyFlags = {
+  private: boolean;
+  anonymous: boolean;
+  uncensored: boolean;
+};
+
+export const PROVIDER_MODEL_SETTINGS_CHANGED_EVENT =
+  "scribe:provider-model-settings-changed";
+
+export type ProviderModelSettingsChangedDetail = {
+  mode: ProviderModelMode;
+  modelId: string;
+};
+
+export function dispatchProviderModelSettingsChanged(
+  detail: ProviderModelSettingsChangedDetail,
+) {
+  window.dispatchEvent(
+    new CustomEvent<ProviderModelSettingsChangedDetail>(
+      PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+      { detail },
+    ),
+  );
+}
+
 export const PRIVATE_MODEL_DESCRIPTION =
   "You're using a model that is private and anonymous.";
 export const ANONYMOUS_MODEL_DESCRIPTION =
@@ -15,8 +40,8 @@ export const ANONYMOUS_MODEL_DESCRIPTION =
 
 export function modelPrivacyBadge(
   model: Pick<VeniceModelDto, "privacy" | "traits">,
+  flags = modelPrivacyFlags(model),
 ): ModelPrivacyBadge | undefined {
-  const flags = modelPrivacyFlags(model);
   if (flags.private) {
     return {
       mode: "private",
@@ -36,7 +61,7 @@ export function modelPrivacyBadge(
 
 export function modelPrivacyFlags(
   model: Pick<VeniceModelDto, "privacy" | "traits">,
-) {
+): ModelPrivacyFlags {
   const privacy = (model.privacy ?? "").toLowerCase();
   const traits = model.traits.map((trait) => trait.toLowerCase());
   return {

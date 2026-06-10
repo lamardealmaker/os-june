@@ -55,7 +55,11 @@ import {
   type ThemePreference,
 } from "../../lib/theme";
 import { parseDictationHelperEvent } from "../../lib/dictation-events";
-import { modelPrivacyBadge, modelPrivacyFlags } from "../../lib/model-privacy";
+import {
+  dispatchProviderModelSettingsChanged,
+  modelPrivacyBadge,
+  modelPrivacyFlags,
+} from "../../lib/model-privacy";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
 import { DictionarySettingsSection } from "./DictionarySettingsSection";
@@ -613,6 +617,7 @@ export function AppSettings({
     try {
       const next = await setVeniceModel(mode, modelId);
       setProviderSettings(next);
+      dispatchProviderModelSettingsChanged({ mode, modelId });
       setStatus(
         mode === "transcription"
           ? "Transcription model updated."
@@ -1383,8 +1388,8 @@ function ModelRow({
 }
 
 function ModelMeta({ model }: { model: VeniceModelDto }) {
-  const flags = traitFlags(model);
-  const privacyBadge = modelPrivacyBadge(model);
+  const flags = modelPrivacyFlags(model);
+  const privacyBadge = modelPrivacyBadge(model, flags);
   const context = contextLabel(model);
   const price = pricingLabel(model);
   const items: ReactNode[] = [];
@@ -1431,10 +1436,6 @@ function ModelMeta({ model }: { model: VeniceModelDto }) {
       ))}
     </span>
   );
-}
-
-function traitFlags(model: VeniceModelDto) {
-  return modelPrivacyFlags(model);
 }
 
 function ShortcutRow({
