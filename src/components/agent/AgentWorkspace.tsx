@@ -1732,6 +1732,11 @@ export function AgentWorkspace({
     } catch {
       // Fall through to the local cleanup below.
     } finally {
+      // Tear down the per-session gateway listener along with the flags —
+      // a straggler "running" event arriving after the interrupt would
+      // otherwise flip the session straight back to working (and on a
+      // gateway drop no terminal event ever comes to unregister it).
+      sessionGatewayUnlistenRef.current.get(sessionId)?.();
       const activityCounts = clearSessionActivity(sessionId);
       dispatchAgentSessionStatus({
         sessionId,

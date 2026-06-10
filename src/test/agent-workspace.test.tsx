@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   listHermesSessionMessages: vi.fn(),
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
+  gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
   eventHandlers: new Map<
     string,
     (event: { payload?: { paths?: string[] } }) => void
@@ -102,7 +103,10 @@ vi.mock("../lib/hermes-gateway", () => ({
   HermesGatewayClient: class {
     connect = vi.fn();
     close = vi.fn();
-    onEvent = vi.fn(() => vi.fn());
+    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+      mocks.gatewayEventHandlers.add(handler);
+      return () => mocks.gatewayEventHandlers.delete(handler);
+    });
     onClose = vi.fn(() => vi.fn());
     request = mocks.gatewayRequest;
   },
@@ -130,6 +134,7 @@ const existingSession = {
 describe("AgentWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.gatewayEventHandlers.clear();
     window.sessionStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
     mocks.getAgentTask.mockResolvedValue(existingTask);
@@ -278,6 +283,7 @@ describe("AgentWorkspace", () => {
 
     // The session is now working, so the composer offers a stop control.
     const stop = await screen.findByRole("button", { name: "Stop June" });
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
     await userEvent.click(stop);
 
     await waitFor(() =>
@@ -290,6 +296,9 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Stop June" })).toBeNull(),
     );
+    // Stopping also tears down the per-session gateway listener, so a
+    // straggler "running" event can't flip the session back to working.
+    expect(mocks.gatewayEventHandlers.size).toBe(0);
   });
 
   it("creates a fresh Hermes session for a New Session prompt when an initial session is selected", async () => {
