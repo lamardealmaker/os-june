@@ -12,10 +12,11 @@ type Props = {
 // the portal-in-another-window case where focus never returns here.
 const POLL_INTERVAL_MS = 10_000;
 
-/** Signed in but unfunded: the app stays unusable until the user starts the
- * free trial (or otherwise funds the account). The trial flow — Stripe
- * Checkout with card capture — lives in the accounts portal, so this gate
- * hands off to the browser and watches for the account to become funded. */
+/** Signed in but not a member: the app stays unusable until the user is on a
+ * subscription (trialing or active) — credits alone don't grant access. The
+ * trial flow — Stripe Checkout with card capture — lives in the accounts
+ * portal, so this gate hands off to the browser and watches for the
+ * subscription to become active. */
 export function TrialGate({ account, onRefresh, onSignOut }: Props) {
   const [checking, setChecking] = useState(false);
   const portalUrl = account.portalUrl ?? "https://accounts.opensoftware.co";

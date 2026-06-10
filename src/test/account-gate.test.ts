@@ -37,12 +37,34 @@ describe("shouldBlockOnTrial", () => {
     );
   });
 
-  it("blocks a fresh signup with zero credits and no subscription", () => {
+  it("blocks a fresh signup with no subscription", () => {
     expect(
       shouldBlockOnTrial(
         signedIn({
           balance: { credits: 0, usdMillis: 0 },
           subscription: { subscribed: false },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks credit holders without a subscription — membership is mandatory", () => {
+    expect(
+      shouldBlockOnTrial(
+        signedIn({
+          balance: { credits: 5000, usdMillis: 5000 },
+          subscription: { subscribed: false },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks a cancelled subscriber even with unspent credits", () => {
+    expect(
+      shouldBlockOnTrial(
+        signedIn({
+          balance: { credits: 1200, usdMillis: 1200 },
+          subscription: { subscribed: false, status: "canceled" },
         }),
       ),
     ).toBe(true);
@@ -81,21 +103,10 @@ describe("shouldBlockOnTrial", () => {
     ).toBe(true);
   });
 
-  it("allows positive credits regardless of subscription state", () => {
-    expect(
-      shouldBlockOnTrial(
-        signedIn({
-          balance: { credits: 1200, usdMillis: 1200 },
-          subscription: { subscribed: false },
-        }),
-      ),
-    ).toBe(false);
-  });
-
-  it("fails open when the balance shape is unknown", () => {
+  it("blocks when the subscription state is unknown until a refresh resolves it", () => {
     expect(shouldBlockOnTrial(signedIn({ balance: { usdMillis: 0 } }))).toBe(
-      false,
+      true,
     );
-    expect(shouldBlockOnTrial(signedIn())).toBe(false);
+    expect(shouldBlockOnTrial(signedIn())).toBe(true);
   });
 });
