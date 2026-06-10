@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ import {
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
+import { HermesGatewayError } from "../lib/hermes-gateway";
 
 const mocks = vi.hoisted(() => ({
   cancelAgentTask: vi.fn(),
@@ -24,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   getAgentTask: vi.fn(),
   hermesBridgeFilesystemSnapshot: vi.fn(),
   hermesBridgeFilePreview: vi.fn(),
+  hermesBridgeFileText: vi.fn(),
   hermesBridgeMessagingPlatforms: vi.fn(),
   hermesBridgeSkills: vi.fn(),
   hermesBridgeStatus: vi.fn(),
@@ -33,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   listVeniceModels: vi.fn(),
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
+  osAccountsTopUp: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
@@ -70,6 +74,7 @@ vi.mock("../lib/tauri", () => ({
   getAgentTask: mocks.getAgentTask,
   hermesBridgeFilesystemSnapshot: mocks.hermesBridgeFilesystemSnapshot,
   hermesBridgeFilePreview: mocks.hermesBridgeFilePreview,
+  hermesBridgeFileText: mocks.hermesBridgeFileText,
   hermesBridgeMessagingPlatforms: mocks.hermesBridgeMessagingPlatforms,
   hermesBridgeSkills: mocks.hermesBridgeSkills,
   hermesBridgeStatus: mocks.hermesBridgeStatus,
@@ -79,6 +84,7 @@ vi.mock("../lib/tauri", () => ({
   listVeniceModels: mocks.listVeniceModels,
   listAgentTasks: mocks.listAgentTasks,
   downloadHermesBridgeFile: mocks.downloadHermesBridgeFile,
+  osAccountsTopUp: mocks.osAccountsTopUp,
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
@@ -105,7 +111,9 @@ vi.mock("../lib/hermes-adapter", () => ({
   titleFromPrompt: (prompt: string) => prompt.trim() || "Untitled session",
 }));
 
-vi.mock("../lib/hermes-gateway", () => ({
+vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
+  // Real HermesGatewayError / isSessionBusyError — only the client is faked.
+  ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
   HermesGatewayClient: class {
     connect = vi.fn();
     close = vi.fn();
@@ -180,6 +188,7 @@ describe("AgentWorkspace", () => {
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
     mocks.hermesBridgeFilePreview.mockResolvedValue(null);
+    mocks.hermesBridgeFileText.mockResolvedValue(null);
     mocks.importHermesBridgeFile.mockImplementation(async (path: string) => ({
       name: path.split("/").pop() ?? "attachment",
       path: `/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/uploads/${path.split("/").pop() ?? "attachment"}`,
@@ -1010,6 +1019,164 @@ describe("AgentWorkspace", () => {
     ).toHaveLength(1);
   });
 
+  it("opens a markdown artifact in the viewer panel with rendered content", async () => {
+    const user = userEvent.setup();
+    const reportPath =
+      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/report.md";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace",
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "report.md",
+              path: reportPath,
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Done — I saved the summary as `report.md`.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+    mocks.hermesBridgeFileText.mockResolvedValue(
+      "# Quarterly summary\n\nRevenue grew.",
+    );
+
+    render(<AgentWorkspace />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Open report.md" }),
+    );
+
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(reportPath);
+    expect(
+      await within(panel).findByRole("heading", { name: "Quarterly summary" }),
+    ).toBeInTheDocument();
+    expect(within(panel).getByText("Revenue grew.")).toBeInTheDocument();
+
+    // Find-in-file highlights matches inside the rendered document.
+    await user.click(
+      within(panel).getByRole("button", { name: "Find in file" }),
+    );
+    await user.type(within(panel).getByLabelText("Find in file"), "revenue");
+    // Highlighting trails typing by a short debounce.
+    await waitFor(() =>
+      expect(panel.querySelectorAll("mark").length).toBeGreaterThan(0),
+    );
+    expect(panel.querySelectorAll("mark")[0]).toHaveTextContent(/revenue/i);
+    await user.keyboard("{Escape}"); // clear
+    await user.keyboard("{Escape}"); // collapse
+    expect(panel.querySelectorAll("mark")).toHaveLength(0);
+
+    // The source toggle swaps the rendered document for the raw markdown.
+    await user.click(within(panel).getByRole("button", { name: "Source" }));
+    expect(
+      within(panel).getByText(/# Quarterly summary/),
+    ).toBeInTheDocument();
+
+    await user.click(
+      within(panel).getByRole("button", { name: "Close files" }),
+    );
+    expect(
+      screen.queryByRole("complementary", { name: "Files" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("lists every surfaced file behind the session bar files button", async () => {
+    const user = userEvent.setup();
+    const workspaceRoot =
+      "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace";
+    mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({
+      roots: [
+        {
+          id: "workspace",
+          label: "Workspace",
+          path: workspaceRoot,
+          description: "Hermes scratch files and generated outputs.",
+          entries: [
+            {
+              name: "report.md",
+              path: `${workspaceRoot}/report.md`,
+              kind: "file",
+              size: 1768,
+              modifiedAt: "2026-06-04T18:39:00Z",
+            },
+            {
+              name: "notes.txt",
+              path: `${workspaceRoot}/notes.txt`,
+              kind: "file",
+              size: 420,
+              modifiedAt: "2026-06-04T18:40:00Z",
+            },
+          ],
+        },
+      ],
+    });
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "message-1",
+        role: "assistant",
+        content: "Saved `report.md` and `notes.txt`.",
+        timestamp: "2026-06-04T18:39:00Z",
+      },
+    ]);
+    mocks.hermesBridgeFileText.mockResolvedValue("plain text body");
+
+    render(<AgentWorkspace />);
+
+    await user.click(
+      await screen.findByRole("button", { name: "View files (2)" }),
+    );
+
+    const panel = await screen.findByRole("complementary", { name: "Files" });
+    expect(within(panel).getByText("report.md")).toBeInTheDocument();
+
+    // Opening a non-markdown file from the list shows its raw text.
+    await user.click(within(panel).getByText("notes.txt"));
+    expect(
+      await within(panel).findByText("plain text body"),
+    ).toBeInTheDocument();
+    expect(mocks.hermesBridgeFileText).toHaveBeenCalledWith(
+      `${workspaceRoot}/notes.txt`,
+    );
+
+    // Back returns to the list of every surfaced file.
+    await user.click(within(panel).getByRole("button", { name: "All files" }));
+    expect(within(panel).getByText("report.md")).toBeInTheDocument();
+
+    // The header magnifier expands into the filter; typing narrows the list.
+    await user.click(
+      within(panel).getByRole("button", { name: "Filter files" }),
+    );
+    const filter = within(panel).getByLabelText("Filter files");
+    await user.type(filter, "notes");
+    expect(within(panel).queryByText("report.md")).not.toBeInTheDocument();
+    expect(within(panel).getByText("notes.txt")).toBeInTheDocument();
+
+    // Esc walks back one step at a time: clear, collapse, close.
+    await user.keyboard("{Escape}");
+    expect(within(panel).getByText("report.md")).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(within(panel).queryByRole("searchbox")).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("complementary", { name: "Files" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("does not render download cards for files the user attached", async () => {
     const attachedPath =
       "/Users/junho/Library/Application Support/co.opensoftware.scribe/hermes/workspace/june-context.md";
@@ -1506,6 +1673,143 @@ describe("AgentWorkspace", () => {
     expect(
       screen.getByLabelText(/Full mode - June is running without the file/),
     ).toBeInTheDocument();
+  });
+
+  it("explains a busy rejection and removes the ghost bubble", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.reject(new HermesGatewayError("session busy", 4009));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    const composer = screen.getByPlaceholderText("Send a message");
+    await user.type(composer, "are the subagents using my CLI?");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "are the subagents using my CLI?",
+      }),
+    );
+    // The user learns what's happening in plain language, not "session busy".
+    expect(
+      await screen.findByText(/June is still working on the previous message/),
+    ).toBeInTheDocument();
+    // The rejected prompt never entered the session: no optimistic bubble
+    // lingers in the transcript (it would render below later persisted
+    // messages as a send the agent ignored), and the draft comes back.
+    expect(document.querySelector(".agent-user-turn")).toBeNull();
+    expect(composer).toHaveValue("are the subagents using my CLI?");
+    // The previous turn is still running, so the live listener stays attached.
+    expect(mocks.gatewayEventHandlers.size).toBe(1);
+  });
+
+  it("offers retry and dismiss on a connection-shaped error banner", async () => {
+    const user = userEvent.setup();
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      if (method === "prompt.submit") {
+        return Promise.reject(new Error("Hermes gateway is not connected."));
+      }
+      return Promise.resolve({});
+    });
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Send a message"), "hello");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    expect(
+      await screen.findByText("Hermes gateway is not connected."),
+    ).toBeInTheDocument();
+    // Connection-shaped failures are the retryable ones — reconnecting can fix
+    // them, unlike one-off action failures which only offer dismiss.
+    expect(
+      screen.getByRole("button", { name: "Try again" }),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("Hermes gateway is not connected.")).toBeNull();
+  });
+
+  it("renders an out-of-credits notice with a top-up action instead of the raw 402 error", async () => {
+    const user = userEvent.setup();
+    mocks.osAccountsTopUp.mockResolvedValue(undefined);
+    mocks.listHermesSessionMessages.mockResolvedValue([
+      {
+        id: "m1",
+        role: "user",
+        content: "How are the subagents doing",
+        timestamp: "2026-06-10T10:00:00Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content:
+          "Error: Error code: 402 - {'data': None, 'success': False, 'error_code': 4301, 'message': 'insufficient_credits'}",
+        timestamp: "2026-06-10T10:00:01Z",
+      },
+    ]);
+
+    render(<AgentWorkspace />);
+
+    expect(
+      await screen.findByText(/June stopped because your balance ran out/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Error code: 402/)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Add funds" }));
+    expect(mocks.osAccountsTopUp).toHaveBeenCalledOnce();
+  });
+
+  it("shows every error surface via the __agentErrors() dev handle", async () => {
+    const agentErrors = (
+      window as unknown as { __agentErrors: (show?: boolean) => string }
+    ).__agentErrors;
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    act(() => void agentErrors());
+
+    try {
+      expect(
+        await screen.findByText("Agent error gallery"),
+      ).toBeInTheDocument();
+      // Turn-level samples from the catalog (section label + the card itself)…
+      expect(screen.getAllByText("Out of credits").length).toBeGreaterThan(0);
+      expect(
+        screen.getByRole("button", { name: "Add funds" }),
+      ).toBeInTheDocument();
+      // …plus the forced chrome samples the turn gallery can't represent.
+      expect(
+        screen.getByText("Could not connect to Hermes gateway."),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "Try again" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(/June is still working on the previous message/),
+      ).toBeInTheDocument();
+    } finally {
+      // Always reset the module-level desired state — a failure here must not
+      // leave the gallery on and cascade into later workspace mounts.
+      act(() => void agentErrors(false));
+    }
+    await waitFor(() =>
+      expect(screen.queryByText("Agent error gallery")).toBeNull(),
+    );
   });
 
   // Last in the suite: mounting the workspace kicks off bridge/session

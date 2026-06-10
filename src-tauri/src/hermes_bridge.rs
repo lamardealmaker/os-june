@@ -38,6 +38,7 @@ const FILESYSTEM_MAX_DEPTH: usize = 2;
 const FILESYSTEM_MAX_ENTRIES_PER_DIR: usize = 80;
 const HERMES_IMPORT_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const HERMES_IMAGE_PREVIEW_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const HERMES_TEXT_PREVIEW_MAX_BYTES: u64 = 2 * 1024 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_HEADER_BYTES: usize = 32 * 1024;
 const SCRIBE_PROVIDER_PROXY_MAX_BODY_BYTES: usize = 512 * 1024;
 
@@ -56,6 +57,18 @@ Privacy is your defining trait, by architecture rather than promise. When asked 
 - Open Software never trains on the user's data.
 
 You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.
+"#;
+
+/// Appended to `SOUL.md` only when the spawn actually engaged the Seatbelt
+/// write-jail, so the soul never claims protections that aren't active (the
+/// escape hatch and non-macOS spawns run unsandboxed).
+const JUNE_SOUL_SANDBOX_MD: &str = r#"
+Your environment: you run inside a macOS kernel sandbox (Seatbelt) that the June app applies to you and to every subprocess you start. It is a write-jail, part of the same privacy-by-architecture story:
+
+- You can write only inside your own area — your Hermes home (including your workspace), your runtime directory, and your temp directory. Writes anywhere else (the user's dotfiles, Desktop, Documents, system settings) are denied by the kernel.
+- Reads stay broad so you can work with the user's files, except credential stores (~/.ssh, ~/.aws, ~/.gnupg, keychains, .netrc), which are blocked.
+- When a command fails with "operation not permitted" on a write outside your area, that is the sandbox working as designed. Don't retry or look for workarounds: produce the file in your workspace and tell the user where it is, or ask them to do that one step.
+- If the user asks whether you can damage their system, answer honestly: destructive writes outside your workspace are blocked at the kernel level, not just by policy.
 "#;
 
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
@@ -404,18 +417,20 @@ async fn start_hermes_bridge_inner(
     let provider_proxy_token = random_token();
     let provider_proxy = start_scribe_provider_proxy(provider_proxy_token.clone()).await?;
     sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy_token)?;
-    sync_june_soul(&hermes_home)?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
     // its tool calls, and any subprocess it forks all inherit the profile, so
     // destructive writes (rm -rf of user dirs, dotfile rewrites, TCC db edits)
     // are denied by the kernel rather than by Hermes' own pattern checks.
+    // Resolved before the soul write so June's self-knowledge about the jail
+    // matches what this spawn actually enforces.
     let sandbox_profile = if full_mode {
         None
     } else {
         prepare_sandbox(app, &hermes_home)
     };
     let sandboxed = sandbox_profile.is_some();
+    sync_june_soul(&hermes_home, sandboxed)?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else if full_mode {
@@ -803,6 +818,15 @@ pub async fn hermes_bridge_file_preview(
 }
 
 #[tauri::command]
+pub async fn hermes_bridge_file_text(
+    app: AppHandle,
+    request: HermesFilePreviewRequest,
+) -> Result<Option<String>, AppError> {
+    let requested = validate_hermes_file_path(&app, &request.path)?;
+    text_preview(&requested)
+}
+
+#[tauri::command]
 pub async fn import_hermes_bridge_file(
     app: AppHandle,
     request: ImportHermesFileRequest,
@@ -1035,6 +1059,29 @@ fn unique_upload_path(upload_dir: &Path, source: &Path) -> Result<PathBuf, AppEr
         "hermes_file_import_failed",
         "Could not find an available attachment filename.",
     ))
+}
+
+/// Reads a workspace file for the in-app viewer. `None` (rather than an
+/// error) when the file can't be shown as text — too large or not UTF-8 —
+/// so the frontend falls back to its download card.
+///
+/// The size cap is enforced by the reader itself (one byte of headroom past
+/// the cap detects oversize), not a stat-then-read, so a file still being
+/// written by an agent can't grow past the limit between check and read.
+fn text_preview(path: &Path) -> Result<Option<String>, AppError> {
+    use std::io::Read;
+
+    let file = fs::File::open(path)
+        .map_err(|error| AppError::new("hermes_file_text_failed", error.to_string()))?;
+    let mut bytes = Vec::new();
+    let read = file
+        .take(HERMES_TEXT_PREVIEW_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| AppError::new("hermes_file_text_failed", error.to_string()))?;
+    if read as u64 > HERMES_TEXT_PREVIEW_MAX_BYTES {
+        return Ok(None);
+    }
+    Ok(String::from_utf8(bytes).ok())
 }
 
 fn image_preview_data_url(path: &Path) -> Result<Option<String>, AppError> {
@@ -1734,8 +1781,15 @@ display:
 /// Writes the June persona to `SOUL.md` in the Scribe-managed Hermes home.
 /// Runs on every start so the app-owned identity wins over the default soul
 /// Hermes seeds on first run (and over any stale copy from earlier versions).
-fn sync_june_soul(hermes_home: &std::path::Path) -> Result<(), AppError> {
-    std::fs::write(hermes_home.join("SOUL.md"), JUNE_SOUL_MD)
+/// The sandbox section is included only when this spawn's jail engaged, so
+/// the agent's self-knowledge tracks the actual enforcement.
+fn sync_june_soul(hermes_home: &std::path::Path, sandboxed: bool) -> Result<(), AppError> {
+    let soul = if sandboxed {
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_SANDBOX_MD}")
+    } else {
+        JUNE_SOUL_MD.to_string()
+    };
+    std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
 }
 
@@ -2286,12 +2340,36 @@ mod tests {
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path()).expect("sync soul");
+        sync_june_soul(home.path(), true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
         assert!(soul.contains("Open Software"));
         assert!(!soul.contains("Nous Research"));
+    }
+
+    #[test]
+    fn sandboxed_soul_describes_the_write_jail() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), true).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("Seatbelt"));
+        assert!(soul.contains("write-jail"));
+        assert!(soul.contains("operation not permitted"));
+    }
+
+    #[test]
+    fn unsandboxed_soul_makes_no_sandbox_claims() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("You are June"));
+        assert!(!soul.contains("Seatbelt"));
+        assert!(!soul.contains("sandbox"));
     }
 
     #[cfg(target_os = "macos")]
