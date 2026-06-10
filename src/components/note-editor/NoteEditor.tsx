@@ -127,7 +127,7 @@ export function NoteEditor({
 }: NoteEditorProps) {
   const content = note.editedContent ?? note.generatedContent ?? "";
   const activeTab = note.activeTab ?? "notes";
-  const sourceTranscripts = visibleSourceTranscripts(note);
+  const sourceTranscripts = orderedVisibleSourceTranscripts(note);
   const recordingForNote = recordingStatus;
   const recordingActive = Boolean(recordingForNote);
   const [optionsOpen, setOptionsOpen] = useState(false);
@@ -740,18 +740,51 @@ function turnsToText(turns: TranscriptDto[]): string {
 
 function transcriptToText(note: NoteDto): string {
   if (note.sourceTranscripts?.length) {
-    return turnsToText(note.sourceTranscripts);
+    return turnsToText(orderedVisibleSourceTranscripts(note));
   }
   return note.transcript?.text ?? "";
 }
 
-function visibleSourceTranscripts(
+function orderedVisibleSourceTranscripts(
   note: NoteDto,
 ): NonNullable<NoteDto["sourceTranscripts"]> {
-  return (note.sourceTranscripts ?? []).filter((turn) => {
-    if (turn.text.trim()) return true;
-    return note.processingStatus !== "failed" && !!turn.lastError;
-  });
+  return (note.sourceTranscripts ?? [])
+    .filter((turn) => {
+      if (turn.text.trim()) return true;
+      return note.processingStatus !== "failed" && !!turn.lastError;
+    })
+    .map((turn, index) => ({ turn, index }))
+    .sort(compareSourceTranscriptOrder)
+    .map(({ turn }) => turn);
+}
+
+function compareSourceTranscriptOrder(
+  left: { turn: TranscriptDto; index: number },
+  right: { turn: TranscriptDto; index: number },
+) {
+  const turnIndexOrder = compareOptionalNumber(
+    left.turn.turnIndex,
+    right.turn.turnIndex,
+  );
+  if (turnIndexOrder !== 0) return turnIndexOrder;
+
+  const startOrder = compareOptionalNumber(
+    left.turn.startMs,
+    right.turn.startMs,
+  );
+  if (startOrder !== 0) return startOrder;
+
+  const endOrder = compareOptionalNumber(left.turn.endMs, right.turn.endMs);
+  if (endOrder !== 0) return endOrder;
+
+  return left.index - right.index;
+}
+
+function compareOptionalNumber(left?: number, right?: number) {
+  if (left === undefined && right === undefined) return 0;
+  if (left === undefined) return 1;
+  if (right === undefined) return -1;
+  return left - right;
 }
 
 /** A single conversation turn in the Transcription tab. Mirrors the dictation

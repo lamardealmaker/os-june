@@ -137,6 +137,55 @@ describe("NoteEditor", () => {
     expect(screen.getByText("Microphone response")).toBeInTheDocument();
   });
 
+  it("orders source transcript turns by persisted turn metadata", () => {
+    const { container } = render(
+      <NoteEditor
+        {...props}
+        note={note({
+          activeTab: "transcription",
+          sourceTranscripts: [
+            {
+              id: "turn-3",
+              text: "Second microphone turn",
+              source: "microphone",
+              startMs: 5000,
+              endMs: 6500,
+              turnIndex: 2,
+              status: "succeeded",
+            },
+            {
+              id: "turn-1",
+              text: "First microphone turn",
+              source: "microphone",
+              startMs: 1000,
+              endMs: 2000,
+              turnIndex: 0,
+              status: "succeeded",
+            },
+            {
+              id: "turn-2",
+              text: "System reply",
+              source: "system",
+              startMs: 3000,
+              endMs: 4000,
+              turnIndex: 1,
+              status: "succeeded",
+            },
+          ],
+        })}
+      />,
+    );
+
+    const renderedTurns = Array.from(
+      container.querySelectorAll(".transcript-turn-text"),
+    ).map((turn) => turn.textContent);
+    expect(renderedTurns).toEqual([
+      "First microphone turn",
+      "System reply",
+      "Second microphone turn",
+    ]);
+  });
+
   it("shows friendly source transcript failure reasons", () => {
     render(
       <NoteEditor
