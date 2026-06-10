@@ -58,6 +58,18 @@ Privacy is your defining trait, by architecture rather than promise. When asked 
 You are helpful, knowledgeable, and direct. Communicate clearly, admit uncertainty when appropriate, and prioritize being genuinely useful over being verbose. Be targeted and efficient in your exploration and investigations. Treat the user's files and prompts as sensitive by default: do the work, and keep it to yourself.
 "#;
 
+/// Appended to `SOUL.md` only when the spawn actually engaged the Seatbelt
+/// write-jail, so the soul never claims protections that aren't active (the
+/// escape hatch and non-macOS spawns run unsandboxed).
+const JUNE_SOUL_SANDBOX_MD: &str = r#"
+Your environment: you run inside a macOS kernel sandbox (Seatbelt) that the June app applies to you and to every subprocess you start. It is a write-jail, part of the same privacy-by-architecture story:
+
+- You can write only inside your own area — your Hermes home (including your workspace), your runtime directory, and your temp directory. Writes anywhere else (the user's dotfiles, Desktop, Documents, system settings) are denied by the kernel.
+- Reads stay broad so you can work with the user's files, except credential stores (~/.ssh, ~/.aws, ~/.gnupg, keychains, .netrc), which are blocked.
+- When a command fails with "operation not permitted" on a write outside your area, that is the sandbox working as designed. Don't retry or look for workarounds: produce the file in your workspace and tell the user where it is, or ask them to do that one step.
+- If the user asks whether you can damage their system, answer honestly: destructive writes outside your workspace are blocked at the kernel level, not just by policy.
+"#;
+
 const ISOLATED_HERMES_ENV_VARS: &[&str] = &[
     "HERMES_HOME",
     "HERMES_CONFIG",
@@ -374,14 +386,16 @@ async fn start_hermes_bridge_inner(
     let provider_proxy_token = random_token();
     let provider_proxy = start_scribe_provider_proxy(provider_proxy_token.clone()).await?;
     sync_hermes_config(&hermes_home, provider_proxy.port, &provider_proxy_token)?;
-    sync_june_soul(&hermes_home)?;
 
     // Wrap the spawn in a macOS Seatbelt write-jail when possible. The model,
     // its tool calls, and any subprocess it forks all inherit the profile, so
     // destructive writes (rm -rf of user dirs, dotfile rewrites, TCC db edits)
     // are denied by the kernel rather than by Hermes' own pattern checks.
+    // Resolved before the soul write so June's self-knowledge about the jail
+    // matches what this spawn actually enforces.
     let sandbox_profile = prepare_sandbox(app, &hermes_home);
     let sandboxed = sandbox_profile.is_some();
+    sync_june_soul(&hermes_home, sandboxed)?;
     if sandboxed {
         eprintln!("Spawning Hermes under the macOS Seatbelt write-jail.");
     } else {
@@ -1697,8 +1711,15 @@ display:
 /// Writes the June persona to `SOUL.md` in the Scribe-managed Hermes home.
 /// Runs on every start so the app-owned identity wins over the default soul
 /// Hermes seeds on first run (and over any stale copy from earlier versions).
-fn sync_june_soul(hermes_home: &std::path::Path) -> Result<(), AppError> {
-    std::fs::write(hermes_home.join("SOUL.md"), JUNE_SOUL_MD)
+/// The sandbox section is included only when this spawn's jail engaged, so
+/// the agent's self-knowledge tracks the actual enforcement.
+fn sync_june_soul(hermes_home: &std::path::Path, sandboxed: bool) -> Result<(), AppError> {
+    let soul = if sandboxed {
+        format!("{JUNE_SOUL_MD}{JUNE_SOUL_SANDBOX_MD}")
+    } else {
+        JUNE_SOUL_MD.to_string()
+    };
+    std::fs::write(hermes_home.join("SOUL.md"), soul)
         .map_err(|error| AppError::new("hermes_bridge_soul_failed", error.to_string()))
 }
 
@@ -2232,12 +2253,36 @@ mod tests {
         )
         .expect("seed default soul");
 
-        sync_june_soul(home.path()).expect("sync soul");
+        sync_june_soul(home.path(), true).expect("sync soul");
 
         let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
         assert!(soul.contains("You are June"));
         assert!(soul.contains("Open Software"));
         assert!(!soul.contains("Nous Research"));
+    }
+
+    #[test]
+    fn sandboxed_soul_describes_the_write_jail() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), true).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("Seatbelt"));
+        assert!(soul.contains("write-jail"));
+        assert!(soul.contains("operation not permitted"));
+    }
+
+    #[test]
+    fn unsandboxed_soul_makes_no_sandbox_claims() {
+        let home = tempfile::tempdir().expect("tempdir");
+
+        sync_june_soul(home.path(), false).expect("sync soul");
+
+        let soul = std::fs::read_to_string(home.path().join("SOUL.md")).expect("read soul");
+        assert!(soul.contains("You are June"));
+        assert!(!soul.contains("Seatbelt"));
+        assert!(!soul.contains("sandbox"));
     }
 
     #[cfg(target_os = "macos")]
