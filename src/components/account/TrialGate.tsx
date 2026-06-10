@@ -19,7 +19,9 @@ const POLL_INTERVAL_MS = 10_000;
  * subscription to become active. */
 export function TrialGate({ account, onRefresh, onSignOut }: Props) {
   const [checking, setChecking] = useState(false);
-  const portalUrl = account.portalUrl ?? "https://accounts.opensoftware.co";
+  // No fallback: portalUrl mirrors this build's accounts_url, and a hardcoded
+  // production URL would silently send dev/staging builds to the prod portal.
+  const portalUrl = account.portalUrl;
   const handle = account.user?.handle;
   const pastDue = account.subscription?.status === "past_due";
 
@@ -52,14 +54,20 @@ export function TrialGate({ account, onRefresh, onSignOut }: Props) {
         </p>
 
         <div className="welcome-providers">
-          <a
-            className="primary-action"
-            href={portalUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            {pastDue ? "Manage billing" : "Start free trial"}
-          </a>
+          {portalUrl ? (
+            <a
+              className="primary-action"
+              href={portalUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {pastDue ? "Manage billing" : "Start free trial"}
+            </a>
+          ) : (
+            <p className="welcome-status welcome-status-info">
+              The accounts portal is not configured for this build.
+            </p>
+          )}
           <button
             type="button"
             className="btn btn-secondary trial-gate-refresh"
