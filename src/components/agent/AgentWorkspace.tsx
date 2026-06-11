@@ -663,15 +663,25 @@ export function AgentWorkspace({
   const [hermesSessionsHydrated, setHermesSessionsHydrated] = useState(false);
   // Mounting without an explicit target restores the last open conversation,
   // so app restarts and dev reloads land the user back in the session they
-  // were working in instead of bouncing them to the newest one.
+  // were working in instead of bouncing them to the newest one. A pending
+  // new-session marker overrides the restore: the mount-time sessions-changed
+  // dispatch would otherwise announce the restored session as selected, which
+  // App reads as "switched to an existing session" and drops a pending
+  // project assignment before the new session even exists.
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<
     string | undefined
-  >(() => initialSessionId ?? readLastOpenSessionId());
+  >(
+    () =>
+      initialSessionId ??
+      (hasPendingNewSessionRequest() ? undefined : readLastOpenSessionId()),
+  );
   const selectedHermesSessionIdRef = useRef<string | undefined>(
     selectedHermesSessionId,
   );
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
-  const [newSessionMode, setNewSessionMode] = useState(false);
+  const [newSessionMode, setNewSessionMode] = useState(
+    () => !initialSessionId && hasPendingNewSessionRequest(),
+  );
   const [heroGreeting, setHeroGreeting] = useState(advanceHeroGreeting);
   const heroGreetingConsumedRef = useRef(false);
   const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
@@ -769,7 +779,7 @@ export function AgentWorkspace({
   // Tasks whose hydration fetch has resolved (hydratedTaskIdsRef only says
   // the fetch *started*) — the scroll-settling logic needs the landing.
   const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
-  const newSessionModeRef = useRef(false);
+  const newSessionModeRef = useRef(newSessionMode);
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
   // chat hands over to a fresh thread — not when the hero is dismissed by
@@ -6361,6 +6371,23 @@ export function markAgentNewSessionPending(prompt?: string) {
 // would hijack whatever the user had open into a new session (and re-submit
 // the stale prompt).
 const AGENT_NEW_SESSION_PENDING_TTL_MS = 15_000;
+
+/** Non-consuming peek at the pending marker, for state init on a fresh
+ * mount. The mount effect still consumes it via pendingNewSessionRequest();
+ * peeking here must not clear it, or the auto-submit prompt would be lost. */
+function hasPendingNewSessionRequest(): boolean {
+  try {
+    const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
+    if (value == null) return false;
+    const parsed = JSON.parse(value) as { createdAt?: number };
+    return (
+      typeof parsed.createdAt === "number" &&
+      Date.now() - parsed.createdAt <= AGENT_NEW_SESSION_PENDING_TTL_MS
+    );
+  } catch {
+    return false;
+  }
+}
 
 function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
   try {
