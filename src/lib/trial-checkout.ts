@@ -2,10 +2,25 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   focusMainWindow,
+  osAccountsLogin,
   osAccountsOpenPortal,
   osAccountsStartTrialCheckout,
 } from "./tauri";
 import type { AccountStatus } from "./tauri";
+
+// Mirrored from src-tauri/src/os_accounts.rs: the stored grant lacks a scope
+// the direct checkout needs (it predates billing:write). A token refresh can
+// never broaden a grant, so the recovery is an interactive re-auth.
+const NEEDS_REAUTH_CODE = "trial_checkout_needs_reauth";
+// Raised by os_accounts_login when the user cancels the browser sign-in.
+const LOGIN_CANCELED_CODE = "login_canceled";
+
+function errorCode(error: unknown): string | undefined {
+  if (error && typeof error === "object" && "code" in error) {
+    return String((error as { code: unknown }).code);
+  }
+  return undefined;
+}
 
 /** Fired by the Rust core when the `osscribe://billing/callback` deep link
  * lands — the user finished (or canceled) checkout in the browser. Payload is
@@ -47,9 +62,11 @@ export function isSubscriptionActive(account: AccountStatus): boolean {
  * session and open it in the system browser, then polls the account status
  * until the subscription flips to trialing/active. When that happens the hook
  * pulls the app back to the foreground and fires `onActivated` exactly once.
- * If the direct path is unavailable (token without billing:write,
- * subscriptions disabled), it opens the accounts portal instead and keeps the
- * same polling, so no user is ever stranded without a way forward.
+ * A grant minted before this build's scopes (no billing:write) triggers a
+ * re-auth and one retry, so those users still land directly on Stripe. Only
+ * when the direct path stays unavailable (subscriptions disabled, network)
+ * does it open the accounts portal instead, keeping the same polling, so no
+ * user is ever stranded without a way forward.
  */
 export function useTrialCheckout({
   account,
@@ -123,7 +140,8 @@ export function useTrialCheckout({
     setError(undefined);
     setNotice(undefined);
     setPhase("opening");
-    try {
+
+    const openDirectCheckout = async () => {
       const result = await osAccountsStartTrialCheckout();
       if (result.outcome === "alreadySubscribed") {
         // Stale snapshot (e.g. subscribed on another machine); the refreshed
@@ -133,9 +151,9 @@ export function useTrialCheckout({
         return;
       }
       setPhase("waiting");
-    } catch {
-      // Direct checkout unavailable — older token without billing:write or
-      // subscriptions disabled server-side. The portal can always do it.
+    };
+
+    const openPortalFallback = async () => {
       try {
         await osAccountsOpenPortal();
         setUsedPortalFallback(true);
@@ -144,6 +162,39 @@ export function useTrialCheckout({
         setError(messageFromError(portalError));
         setPhase("idle");
       }
+    };
+
+    try {
+      await openDirectCheckout();
+    } catch (checkoutError) {
+      // A grant from before this build's scopes can't mint the checkout
+      // session, and refreshing can't fix that. Re-run sign-in (for an
+      // already-authenticated user it's a quick browser bounce) to pick up
+      // the current scopes, then retry the direct path — the user still
+      // lands on Stripe, not the portal.
+      if (errorCode(checkoutError) === NEEDS_REAUTH_CODE) {
+        try {
+          await osAccountsLogin();
+        } catch (loginError) {
+          if (errorCode(loginError) === LOGIN_CANCELED_CODE) {
+            setPhase("idle");
+            setNotice("Sign-in canceled. Ready when you are.");
+            return;
+          }
+          await openPortalFallback();
+          return;
+        }
+        try {
+          await openDirectCheckout();
+          return;
+        } catch {
+          // Re-auth didn't unblock the direct path; the portal always can.
+        }
+      }
+      // Direct checkout unavailable — subscriptions disabled server-side,
+      // network trouble, or a re-auth that still lacks the scope. The portal
+      // can always do it.
+      await openPortalFallback();
     }
   }, []);
 
