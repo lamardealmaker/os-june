@@ -31,8 +31,10 @@ import { IconFilePdf } from "central-icons/IconFilePdf";
 import { IconFilePng } from "central-icons/IconFilePng";
 import { IconFileText } from "central-icons/IconFileText";
 import { IconFileZip } from "central-icons/IconFileZip";
-import { IconFolderSparkle } from "central-icons/IconFolderSparkle";
 import { IconHeartBeat } from "central-icons/IconHeartBeat";
+import { IconHistory } from "central-icons/IconHistory";
+import { IconListBullets } from "central-icons/IconListBullets";
+import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMicrophone } from "central-icons/IconMicrophone";
 import { IconPencil } from "central-icons/IconPencil";
@@ -62,6 +64,7 @@ import {
 import { BackButton } from "../ui/BackButton";
 import { Dialog } from "../ui/Dialog";
 import { EmptyState } from "../ui/EmptyState";
+import { HoverTip } from "../ui/HoverTip";
 import { InlineNotice } from "../ui/InlineNotice";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Spinner } from "../ui/Spinner";
@@ -69,6 +72,7 @@ import {
   cancelAgentTask,
   createAgentTask,
   dictationHelperCommand,
+  explainAgentApproval,
   getAgentTask,
   ensureHermesBridgeSession,
   hermesBridgeFilesystemSnapshot,
@@ -86,6 +90,7 @@ import {
   osAccountsTopUp,
   providerModelSettings,
   retryAgentTask,
+  scribeVerifyUrl,
   sendAgentMessage,
   startHermesBridge,
   suggestAgentSessionTitle,
@@ -409,15 +414,21 @@ type AgentShortcut = {
  * window is the curated first-impression mix (an instant run, a prefill, an
  * attach flow, and a health check) that shows when the shuffle is identity
  * (e.g. in tests with Math.random mocked to 0).
+ *
+ * Every suggestion must succeed inside the default write-jail: reads are
+ * broad, but writes land only in the agent workspace. Don't add shortcuts
+ * that rename, move, or delete the user's files (tidy a folder, free up
+ * disk space, dedupe) — the sandbox denies the write mid-task and June's
+ * own suggestion reads as broken.
  */
 const AGENT_SHORTCUTS: AgentShortcut[] = [
   {
-    key: "tidy-downloads",
-    icon: <IconFolderSparkle size={18} />,
-    title: "Tidy my Downloads",
-    description: "Sort the clutter into folders and flag what's safe to toss.",
+    key: "recent-files",
+    icon: <IconHistory size={18} />,
+    title: "Catch up on recent files",
+    description: "A quick rundown of what's new across your folders.",
     prompt:
-      "Tidy up my Downloads folder: group the files into subfolders by type, then list anything older than six months that looks safe to delete. Don't delete anything without checking with me first.",
+      "Look through my Desktop, Documents, and Downloads folders for files added or changed in the last week and give me a quick rundown of what's new, grouped by what they seem to be for. Don't move or change anything.",
     action: "run",
   },
   {
@@ -456,31 +467,31 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "prefill",
   },
   {
-    key: "rename-screenshots",
+    key: "describe-screenshots",
     icon: <IconCameraSparkle size={18} />,
-    title: "Rename my screenshots",
-    description: "Turn screenshot gibberish into names that mean something.",
+    title: "Find the right screenshot",
+    description: "June looks through them so you don't have to.",
     prompt:
-      "Look through the screenshots on my Desktop and in my Downloads folder, open each one, and rename it to a short descriptive name based on what it shows. Keep the file extensions and don't overwrite anything.",
+      "Look through the recent screenshots on my Desktop and in my Downloads folder, open each one, and tell me what it shows so I can find the one I'm looking for. Don't rename, move, or change anything.",
     action: "run",
   },
   {
     key: "draft-document",
     icon: <IconPencilLine size={18} />,
     title: "Draft a document",
-    description: "Start a write-up and save it to your Documents.",
+    description: "Start a write-up and get it as a downloadable file.",
     prompt:
-      "Draft a <kind of document> about <topic>, then save it as a Markdown file in my Documents folder.",
+      "Draft a <kind of document> about <topic>, then save it as a Markdown file in your workspace so I can download it.",
     action: "prefill",
   },
   {
-    key: "disk-space",
+    key: "analyze-spreadsheet",
     icon: <IconPieChart1 size={18} />,
-    title: "Free up disk space",
-    description: "Find what's eating your storage and what can go.",
+    title: "Analyze a spreadsheet",
+    description: "Key figures, trends, and oddities from a CSV or sheet.",
     prompt:
-      "Work out what's taking up the most disk space in my home folder, summarize the biggest culprits, and suggest what's safe to clean up. Don't delete anything without checking with me first.",
-    action: "run",
+      "Analyze the attached spreadsheet: summarize the key figures and trends, and call out anything that looks off.",
+    action: "attach",
   },
   {
     key: "extract-text",
@@ -492,13 +503,13 @@ const AGENT_SHORTCUTS: AgentShortcut[] = [
     action: "attach",
   },
   {
-    key: "find-duplicates",
-    icon: <IconFiles size={18} />,
-    title: "Find duplicate files",
-    description: "Spot copies wasting space across your folders.",
+    key: "plan-project",
+    icon: <IconListBullets size={18} />,
+    title: "Plan a project",
+    description: "Turn a vague goal into concrete first steps.",
     prompt:
-      "Scan my Downloads, Documents, and Desktop folders for duplicate files, group the copies together, and tell me which ones look safe to remove. Don't delete anything without checking with me first.",
-    action: "run",
+      "Help me plan <a project>: break it into concrete steps, flag the risks, and suggest what to tackle first.",
+    action: "prefill",
   },
 ];
 
@@ -657,17 +668,31 @@ export function AgentWorkspace({
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
   >(() => (initialSession ? [initialSession] : []));
+  // False until the first listHermesSessions fetch lands. Until then the
+  // items above only hold the mount seed (the clicked session, or nothing),
+  // and broadcasting that would wipe the sidebar's already-loaded list.
+  const [hermesSessionsHydrated, setHermesSessionsHydrated] = useState(false);
   // Mounting without an explicit target restores the last open conversation,
   // so app restarts and dev reloads land the user back in the session they
-  // were working in instead of bouncing them to the newest one.
+  // were working in instead of bouncing them to the newest one. A pending
+  // new-session marker overrides the restore: the mount-time sessions-changed
+  // dispatch would otherwise announce the restored session as selected, which
+  // App reads as "switched to an existing session" and drops a pending
+  // project assignment before the new session even exists.
   const [selectedHermesSessionId, setSelectedHermesSessionId] = useState<
     string | undefined
-  >(() => initialSessionId ?? readLastOpenSessionId());
+  >(
+    () =>
+      initialSessionId ??
+      (hasPendingNewSessionRequest() ? undefined : readLastOpenSessionId()),
+  );
   const selectedHermesSessionIdRef = useRef<string | undefined>(
     selectedHermesSessionId,
   );
   const lastAutoSubmittedRef = useRef<{ prompt: string; at: number }>();
-  const [newSessionMode, setNewSessionMode] = useState(false);
+  const [newSessionMode, setNewSessionMode] = useState(
+    () => !initialSessionId && hasPendingNewSessionRequest(),
+  );
   const [heroGreeting, setHeroGreeting] = useState(advanceHeroGreeting);
   const heroGreetingConsumedRef = useRef(false);
   const [heroDeck, setHeroDeck] = useState(shuffleAgentShortcuts);
@@ -687,6 +712,11 @@ export function AgentWorkspace({
   const pendingHermesMessagesRef = useRef<
     Record<string, HermesSessionMessage[]>
   >({});
+  // Per-session ordering for message fetches: the sequence handed out at
+  // fetch start, and the highest sequence whose response was applied. See
+  // listSessionMessagesOrdered.
+  const sessionMessagesFetchSeqRef = useRef<Map<string, number>>(new Map());
+  const sessionMessagesAppliedSeqRef = useRef<Map<string, number>>(new Map());
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
@@ -719,6 +749,9 @@ export function AgentWorkspace({
   >(null);
   const [generationPrivacyBadge, setGenerationPrivacyBadge] =
     useState<ModelPrivacyBadge>();
+  // Attestation walkthrough URL served by the backend (same page as Settings
+  // → About → Verify server); the privacy badge links to it when known.
+  const [verifyUrl, setVerifyUrl] = useState<string>();
   const [capabilityQuery, setCapabilityQuery] = useState("");
   const [capabilityLoading, setCapabilityLoading] = useState(false);
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
@@ -765,7 +798,7 @@ export function AgentWorkspace({
   // Tasks whose hydration fetch has resolved (hydratedTaskIdsRef only says
   // the fetch *started*) — the scroll-settling logic needs the landing.
   const taskHistoryLoadedIdsRef = useRef<Set<string>>(new Set());
-  const newSessionModeRef = useRef(false);
+  const newSessionModeRef = useRef(newSessionMode);
   // True only while a brand-new thread is being started from the hero. The
   // hero→dock composer FLIP keys off this so it glides *only* when the empty
   // chat hands over to a fresh thread — not when the hero is dismissed by
@@ -1053,6 +1086,7 @@ export function AgentWorkspace({
     setHermesSessionsLoading(true);
     try {
       const sessions = applySessionTitleOverrides(await listHermesSessions());
+      setHermesSessionsHydrated(true);
       const pendingMessages = pendingHermesMessagesRef.current;
       const selectedSessionId = selectedHermesSessionIdRef.current;
       const workingSessions = workingSessionIdsRef.current;
@@ -1160,6 +1194,20 @@ export function AgentWorkspace({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    scribeVerifyUrl()
+      .then((url) => {
+        if (!cancelled && url) setVerifyUrl(url);
+      })
+      // Without a configured backend there is nothing to verify; the badge
+      // stays a plain tooltip.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!bridge.running) return;
     void loadHermesSessions();
   }, [bridge.running, loadHermesSessions]);
@@ -1199,6 +1247,11 @@ export function AgentWorkspace({
   }, [pendingReply]);
 
   useEffect(() => {
+    // The sidebar and App replace their session lists wholesale with this
+    // payload, so an unhydrated broadcast (mount seed only) would collapse
+    // the list they already fetched themselves and flicker it back once the
+    // real fetch lands.
+    if (!hermesSessionsHydrated) return;
     dispatchAgentSessionsChanged({
       sessions: hermesSessionItems,
       selectedSessionId: selectedHermesSessionId,
@@ -1206,6 +1259,7 @@ export function AgentWorkspace({
       waitingSessionIds: Array.from(waitingSessionIds),
     });
   }, [
+    hermesSessionsHydrated,
     hermesSessionItems,
     selectedHermesSessionId,
     waitingSessionIds,
@@ -1263,9 +1317,9 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
     let cancelled = false;
-    listHermesSessionMessages(selectedHermesSessionId)
+    listSessionMessagesOrdered(selectedHermesSessionId)
       .then((messages) => {
-        if (cancelled) return;
+        if (cancelled || !messages) return;
         const retainedPending = retainUnpersistedPendingMessages(
           pendingHermesMessagesRef.current[selectedHermesSessionId] ?? [],
           messages,
@@ -1423,7 +1477,13 @@ export function AgentWorkspace({
       for (const animation of box.getAnimations()) animation.cancel();
     }
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    const contentHeight = el.scrollHeight;
+    el.style.height = `${Math.min(contentHeight, 200)}px`;
+    // Scrollable only once growth is capped. Below the cap the field always
+    // fits its content, but the measurement above passes through a transient
+    // overflowing state (height:auto), and with overflow-y:auto that makes
+    // the overlay scrollbar flash on every line growth.
+    el.style.overflowY = contentHeight > 200 ? "auto" : "hidden";
     const nextBoxHeight = box.offsetHeight;
     if (nextBoxHeight === prevBoxHeight) return;
     if (
@@ -2094,9 +2154,30 @@ export function AgentWorkspace({
     }
   }
 
+  // Message fetches for one session can overlap: the selection effect, the
+  // 2.5s working poll, and the terminal-event refresh all call
+  // listHermesSessionMessages without awaiting each other, and each applies
+  // its response as a whole-list overwrite. Responses can land out of order
+  // (a slow fetch started before a fast one resolves after it), so without
+  // ordering a stale list clobbers a newer one — the classic symptom is a
+  // just-sent user message vanishing (its pending bubble was dropped when the
+  // newer fetch persisted it) until a later refresh restores it. Fetches are
+  // stamped with a per-session sequence at start; a response only applies if
+  // no later-started fetch has applied first.
+  async function listSessionMessagesOrdered(sessionId: string) {
+    const seq = (sessionMessagesFetchSeqRef.current.get(sessionId) ?? 0) + 1;
+    sessionMessagesFetchSeqRef.current.set(sessionId, seq);
+    const messages = await listHermesSessionMessages(sessionId);
+    const applied = sessionMessagesAppliedSeqRef.current.get(sessionId) ?? 0;
+    if (seq < applied) return undefined;
+    sessionMessagesAppliedSeqRef.current.set(sessionId, seq);
+    return messages;
+  }
+
   async function refreshHermesSession(sessionId: string) {
     try {
-      const messages = await listHermesSessionMessages(sessionId);
+      const messages = await listSessionMessagesOrdered(sessionId);
+      if (!messages) return;
       const retainedPending = retainUnpersistedPendingMessages(
         pendingHermesMessagesRef.current[sessionId] ?? [],
         messages,
@@ -2836,6 +2917,24 @@ export function AgentWorkspace({
     ) {
       return;
     }
+    // The timeline's rise-and-fade belongs to this same handoff, so it runs
+    // here rather than as a CSS mount animation — as CSS it replayed on every
+    // timeline mount, nudging the conversation upward when merely opening an
+    // existing chat from the hero (or returning from another view).
+    listRef.current?.animate(
+      [
+        { opacity: 0, transform: "translateY(10px)" },
+        { opacity: 1, transform: "translateY(0)" },
+      ],
+      // Backwards fill so a slow frame can't paint the timeline at rest
+      // before the first animation frame applies (the CSS original filled
+      // backwards for the same reason).
+      {
+        duration: 280,
+        easing: "cubic-bezier(0.22, 1, 0.36, 1)", // --ease-out
+        fill: "backwards",
+      },
+    );
     const next = box.getBoundingClientRect();
     const dx = prev.left - next.left;
     const dy = prev.top - next.top;
@@ -3159,7 +3258,10 @@ export function AgentWorkspace({
           />
           <div className="agent-detail-heading">
             <h2>{selectedTask.title}</h2>
-            <SafetyBadge privacyBadge={generationPrivacyBadge} />
+            <SafetyBadge
+              privacyBadge={generationPrivacyBadge}
+              verifyUrl={verifyUrl}
+            />
           </div>
         </div>
         <div className="agent-actions">
@@ -3241,6 +3343,7 @@ export function AgentWorkspace({
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
           privacyBadge={generationPrivacyBadge}
+          verifyUrl={verifyUrl}
           fullMode={Boolean(bridge.running && bridge.connection?.fullMode)}
           title={
             !newSessionMode && selectedHermesSessionId
@@ -3359,22 +3462,58 @@ export function AgentWorkspace({
   );
 }
 
-function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
+// The badge's claims (zero retention, enclave inference) are verifiable, not
+// just asserted — when the backend's attestation walkthrough URL is known,
+// the badge links straight to it instead of leaving the proof buried in
+// Settings → About.
+function SafetyBadge({
+  privacyBadge,
+  verifyUrl,
+}: {
+  privacyBadge?: ModelPrivacyBadge;
+  verifyUrl?: string;
+}) {
   if (!privacyBadge) return null;
+  const icon =
+    privacyBadge.mode === "e2ee" ? (
+      <IconLock size={13} aria-hidden />
+    ) : privacyBadge.mode === "private" ? (
+      <IconShieldAi size={13} aria-hidden />
+    ) : (
+      <IconAnonymous size={13} aria-hidden />
+    );
+  const label = (
+    <span className="agent-safety-badge-label">{privacyBadge.label}</span>
+  );
+  if (!verifyUrl) {
+    return (
+      <HoverTip
+        tip={privacyBadge.description}
+        className="agent-safety-badge"
+        data-mode={privacyBadge.mode}
+        tabIndex={0}
+        aria-label={`${privacyBadge.label} - ${privacyBadge.description}`}
+      >
+        {icon}
+        {label}
+      </HoverTip>
+    );
+  }
+  const description = `${privacyBadge.description} Click to see exactly what code June's server runs and how to verify it yourself.`;
   return (
-    <span
-      className="agent-safety-badge"
-      data-mode={privacyBadge.mode}
-      title={privacyBadge.description}
-      aria-label={`${privacyBadge.label} - ${privacyBadge.description}`}
-    >
-      {privacyBadge.mode === "private" ? (
-        <IconShieldAi size={13} aria-hidden />
-      ) : (
-        <IconAnonymous size={13} aria-hidden />
-      )}
-      <span className="agent-safety-badge-label">{privacyBadge.label}</span>
-    </span>
+    <HoverTip tip={description} className="agent-safety-badge-wrap">
+      <a
+        className="agent-safety-badge"
+        data-mode={privacyBadge.mode}
+        href={verifyUrl}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`${privacyBadge.label} - ${description}`}
+      >
+        {icon}
+        {label}
+      </a>
+    </HoverTip>
   );
 }
 
@@ -3385,14 +3524,15 @@ function UnrestrictedBadge() {
   const description =
     "June is running without the file sandbox and can change any file your account can. Start a session with Unrestricted off to restore the sandbox.";
   return (
-    <span
+    <HoverTip
+      tip={description}
       className="agent-safety-badge agent-sandbox-badge"
-      title={description}
+      tabIndex={0}
       aria-label={`Unrestricted - ${description}`}
     >
       <IconShieldCrossed size={13} aria-hidden />
       Unrestricted
-    </span>
+    </HoverTip>
   );
 }
 
@@ -3404,6 +3544,7 @@ function UnrestrictedBadge() {
 function AgentSessionBar({
   origin,
   privacyBadge,
+  verifyUrl,
   fullMode,
   title,
   artifactCount = 0,
@@ -3414,6 +3555,7 @@ function AgentSessionBar({
 }: {
   origin?: AgentWorkspaceOrigin;
   privacyBadge?: ModelPrivacyBadge;
+  verifyUrl?: string;
   fullMode?: boolean;
   title?: string;
   artifactCount?: number;
@@ -3537,7 +3679,7 @@ function AgentSessionBar({
             <span aria-hidden>{artifactCount}</span>
           </button>
         ) : null}
-        <SafetyBadge privacyBadge={privacyBadge} />
+        <SafetyBadge privacyBadge={privacyBadge} verifyUrl={verifyUrl} />
         {hasMenu ? (
           <div className="agent-session-menu-wrap" ref={menuWrapRef}>
             <button
@@ -4735,7 +4877,36 @@ function ApprovalPart({
   const activeChoice = part.choice ?? submitting;
   const resolved = part.status !== "pending" || activeChoice !== undefined;
   const [explainOpen, setExplainOpen] = useState(false);
+  // "Explain first" asks the generation model what this specific request
+  // would do — the request stays parked, nothing is approved by asking.
+  // The answer is cached for the card's lifetime; an error retries on the
+  // next open and falls back to static copy meanwhile.
+  const [explanation, setExplanation] = useState<string>();
+  const [explainState, setExplainState] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
   const explanationId = useId();
+
+  function toggleExplain() {
+    const nextOpen = !explainOpen;
+    setExplainOpen(nextOpen);
+    if (!nextOpen || explainState === "loading" || explainState === "ready") {
+      return;
+    }
+    setExplainState("loading");
+    explainAgentApproval({
+      description: part.description,
+      command: part.command || undefined,
+    })
+      .then((response) => {
+        setExplanation(response.explanation);
+        setExplainState("ready");
+      })
+      .catch(() => {
+        setExplainState("error");
+      });
+  }
+
   return (
     <article className="agent-approval-card" data-status={part.status}>
       <span className="agent-tool-icon">
@@ -4755,10 +4926,25 @@ function ApprovalPart({
         {part.command ? <pre>{part.command}</pre> : null}
         {!resolved && explainOpen ? (
           <div className="agent-approval-explanation" id={explanationId}>
-            <p>
-              June is paused because this request needs your explicit permission
-              before it can continue.
-            </p>
+            {explainState === "loading" ? (
+              <p
+                className="agent-approval-explanation-loading"
+                role="status"
+                aria-live="polite"
+              >
+                <Spinner aria-hidden />
+                <span>Working out what this request does…</span>
+              </p>
+            ) : explainState === "ready" && explanation ? (
+              <p>{explanation}</p>
+            ) : (
+              // Generation unavailable (offline, signed out): keep the
+              // static framing rather than an empty panel.
+              <p>
+                June is paused because this request needs your explicit
+                permission before it can continue.
+              </p>
+            )}
             <p>
               Approve once allows only this request. This session allows
               matching requests until the session ends.{" "}
@@ -4791,7 +4977,7 @@ function ApprovalPart({
               aria-expanded={explainOpen}
               aria-controls={explanationId}
               disabled={disabled}
-              onClick={() => setExplainOpen((value) => !value)}
+              onClick={toggleExplain}
             >
               <IconCircleQuestionmark size={14} />
               {explainOpen ? "Hide explanation" : "Explain first"}
@@ -6350,6 +6536,23 @@ export function markAgentNewSessionPending(prompt?: string) {
 // would hijack whatever the user had open into a new session (and re-submit
 // the stale prompt).
 const AGENT_NEW_SESSION_PENDING_TTL_MS = 15_000;
+
+/** Non-consuming peek at the pending marker, for state init on a fresh
+ * mount. The mount effect still consumes it via pendingNewSessionRequest();
+ * peeking here must not clear it, or the auto-submit prompt would be lost. */
+function hasPendingNewSessionRequest(): boolean {
+  try {
+    const value = window.sessionStorage.getItem(AGENT_NEW_SESSION_PENDING_KEY);
+    if (value == null) return false;
+    const parsed = JSON.parse(value) as { createdAt?: number };
+    return (
+      typeof parsed.createdAt === "number" &&
+      Date.now() - parsed.createdAt <= AGENT_NEW_SESSION_PENDING_TTL_MS
+    );
+  } catch {
+    return false;
+  }
+}
 
 function pendingNewSessionRequest(): AgentNewSessionDetail | undefined {
   try {

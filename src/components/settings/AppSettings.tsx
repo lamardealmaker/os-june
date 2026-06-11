@@ -9,6 +9,7 @@ import { IconCircleX } from "central-icons/IconCircleX";
 import { IconExclamationCircle } from "central-icons/IconExclamationCircle";
 import { IconFire1 } from "central-icons/IconFire1";
 import { IconGhost2 } from "central-icons/IconGhost2";
+import { IconLock } from "central-icons/IconLock";
 import { IconMagnifyingGlass } from "central-icons/IconMagnifyingGlass";
 import { IconMoonStar } from "central-icons/IconMoonStar";
 import { IconSun } from "central-icons/IconSun";
@@ -48,6 +49,7 @@ import {
 } from "../account/AccountSettings";
 import { KeycapShortcut } from "../shortcuts/KeycapShortcut";
 import { Dialog } from "../ui/Dialog";
+import { HoverTip } from "../ui/HoverTip";
 import { SegmentedControl } from "../ui/SegmentedControl";
 import { Switch } from "../ui/Switch";
 import { APP_COMMIT_HASH, APP_VERSION } from "../../app/build-info";
@@ -61,6 +63,7 @@ import {
   dispatchProviderModelSettingsChanged,
   modelPrivacyBadge,
   modelPrivacyFlags,
+  modelSupportsTools,
 } from "../../lib/model-privacy";
 import { ProviderLogo } from "./ProviderLogo";
 import { AgentSettingsSection } from "./AgentSettingsSection";
@@ -1412,18 +1415,22 @@ function ModelMeta({ model }: { model: VeniceModelDto }) {
   if (context) items.push(<span>{context}</span>);
   if (privacyBadge) {
     items.push(
-      <span
+      <HoverTip
+        tip={privacyBadge.description}
         className="model-trait-icon"
-        title={privacyBadge.description}
-        aria-label={privacyBadge.description}
+        data-mode={privacyBadge.mode}
+        tabIndex={0}
+        aria-label={`${privacyBadge.label} — ${privacyBadge.description}`}
       >
-        {privacyBadge.mode === "private" ? (
+        {privacyBadge.mode === "e2ee" ? (
+          <IconLock size={14} />
+        ) : privacyBadge.mode === "private" ? (
           <IconGhost2 size={14} />
         ) : (
           <IconAnonymous size={14} />
         )}
         <span>{privacyBadge.label}</span>
-      </span>,
+      </HoverTip>,
     );
   }
   if (flags.uncensored) {
@@ -1511,6 +1518,9 @@ function ShortcutRow({
   );
 }
 
+const NO_TOOLS_MODEL_EXPLANATION =
+  "This model can't use tools, so June's agent can't work with it. Pick a tool-capable model to use June.";
+
 function ModelPickerDialog({
   open,
   mode,
@@ -1565,6 +1575,15 @@ function ModelPickerDialog({
       <div className="model-picker-list" role="listbox" aria-label={title}>
         {filteredOptions.map((model) => {
           const selected = model.id === value;
+          // The text model powers June's agent, which works through tool
+          // calls — a model that can't use tools (Venice's E2EE models)
+          // bricks the agent, so it can't be picked. Only catalog entries
+          // are judged: the synthesized placeholder for a selection the
+          // catalog hasn't loaded yet has no capability data to judge by.
+          const noTools =
+            mode === "generation" &&
+            Boolean(model.provider) &&
+            !modelSupportsTools(model);
           return (
             <button
               key={model.id}
@@ -1572,8 +1591,13 @@ function ModelPickerDialog({
               className="model-picker-option"
               role="option"
               aria-selected={selected}
+              aria-disabled={noTools || undefined}
               data-selected={selected}
-              onClick={() => onSelect(model.id)}
+              data-no-tools={noTools || undefined}
+              title={noTools ? NO_TOOLS_MODEL_EXPLANATION : undefined}
+              onClick={() => {
+                if (!noTools) onSelect(model.id);
+              }}
             >
               <span className="model-picker-logo" aria-hidden>
                 <ProviderLogo
@@ -1589,6 +1613,9 @@ function ModelPickerDialog({
                 {selected ? <IconCheckmark2Small size={14} /> : null}
               </span>
               <span className="model-picker-meta">
+                {noTools ? (
+                  <span className="model-picker-no-tools">No tools</span>
+                ) : null}
                 <ModelMeta model={model} />
               </span>
             </button>

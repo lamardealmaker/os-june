@@ -17,7 +17,11 @@ import {
   HERO_GREETINGS,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
-import { PROVIDER_MODEL_SETTINGS_CHANGED_EVENT } from "../lib/model-privacy";
+import {
+  ANONYMOUS_MODEL_DESCRIPTION,
+  E2EE_MODEL_DESCRIPTION,
+  PROVIDER_MODEL_SETTINGS_CHANGED_EVENT,
+} from "../lib/model-privacy";
 import { HermesGatewayError } from "../lib/hermes-gateway";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -43,6 +47,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   osAccountsTopUp: vi.fn(),
+  scribeVerifyUrl: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
@@ -50,6 +55,7 @@ const mocks = vi.hoisted(() => ({
   sendAgentMessage: vi.fn(),
   startHermesBridge: vi.fn(),
   suggestAgentSessionTitle: vi.fn(),
+  explainAgentApproval: vi.fn(),
   toggleHermesBridgeSkill: vi.fn(),
   toggleHermesBridgeToolset: vi.fn(),
   updateHermesBridgeMessagingPlatform: vi.fn(),
@@ -93,11 +99,13 @@ vi.mock("../lib/tauri", () => ({
   osAccountsTopUp: mocks.osAccountsTopUp,
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
+  scribeVerifyUrl: mocks.scribeVerifyUrl,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
   sendAgentMessage: mocks.sendAgentMessage,
   startHermesBridge: mocks.startHermesBridge,
   suggestAgentSessionTitle: mocks.suggestAgentSessionTitle,
+  explainAgentApproval: mocks.explainAgentApproval,
   toggleHermesBridgeSkill: mocks.toggleHermesBridgeSkill,
   toggleHermesBridgeToolset: mocks.toggleHermesBridgeToolset,
   updateHermesBridgeMessagingPlatform:
@@ -182,6 +190,9 @@ describe("AgentWorkspace", () => {
       ],
     });
     mocks.getAgentTask.mockResolvedValue(existingTask);
+    // Empty by default so badge tests assert the plain (unlinked) badge; the
+    // verify-link test overrides this with a real URL.
+    mocks.scribeVerifyUrl.mockResolvedValue("");
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
@@ -221,6 +232,10 @@ describe("AgentWorkspace", () => {
     mocks.suggestAgentSessionTitle.mockResolvedValue({
       title: "Summarize Current Page",
     });
+    mocks.explainAgentApproval.mockResolvedValue({
+      explanation:
+        "This deletes the build folder, then rebuilds the project from scratch.",
+    });
     mocks.gatewayRequest.mockImplementation((method: string) => {
       if (method === "session.create") {
         return Promise.resolve({
@@ -252,6 +267,41 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
+  it("never announces the restored session as selected while a New Session is pending", async () => {
+    // Regression: "New session" from inside a project arms the pending marker
+    // and remounts the workspace. Initializing from the last-open restore used
+    // to dispatch a mount-time sessions-changed event selecting the old
+    // session, which App reads as "switched to existing work" — dropping the
+    // pending project assignment before the new session exists.
+    window.localStorage.setItem("scribe:agent:last-open-session", "session-1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    const sessionDetails: AgentSessionsChangedDetail[] = [];
+    const onSessionsChanged = (event: Event) =>
+      sessionDetails.push(
+        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
+      );
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+
+    try {
+      render(<AgentWorkspace />);
+
+      expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+      await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+      expect(sessionDetails.length).toBeGreaterThan(0);
+      expect(
+        sessionDetails.every((detail) => detail.selectedSessionId == null),
+      ).toBe(true);
+    } finally {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
+    }
+  });
+
   it("labels anonymous-only agent models as anonymous mode", async () => {
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
@@ -281,11 +331,68 @@ describe("AgentWorkspace", () => {
 
     expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
     expect(
-      screen.getByLabelText(
-        "Anonymous mode - You're using a model that is anonymizing your prompts but may still train on your data.",
-      ),
+      screen.getByLabelText(`Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`),
     ).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
+  });
+
+  it("labels e2ee models over private and explains the mode on hover", async () => {
+    mocks.providerModelSettings.mockResolvedValue({
+      settings: {
+        transcriptionProvider: "venice",
+        transcriptionModel: "nvidia/parakeet-tdt-0.6b-v3",
+        generationModel: "e2ee-glm",
+      },
+    });
+    mocks.listVeniceModels.mockResolvedValue({
+      mode: "generation",
+      modelType: "text",
+      selectedModel: "e2ee-glm",
+      models: [
+        {
+          provider: "venice",
+          id: "e2ee-glm",
+          name: "E2EE GLM",
+          modelType: "text",
+          privacy: "private",
+          traits: [],
+          capabilities: ["e2ee"],
+        },
+      ],
+    });
+
+    const user = userEvent.setup();
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const badge = await screen.findByText("E2EE");
+    expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
+
+    // The hover callout replaces the native title tooltip.
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    await user.hover(badge);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      E2EE_MODEL_DESCRIPTION,
+    );
+    await user.unhover(badge);
+    await waitFor(() =>
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
+    );
+  });
+
+  it("links the privacy badge to the server verification page", async () => {
+    mocks.scribeVerifyUrl.mockResolvedValue(
+      "https://scribe-api.example.test/verify",
+    );
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const badge = await screen.findByRole("link", { name: /Private mode/ });
+    expect(badge).toHaveAttribute(
+      "href",
+      "https://scribe-api.example.test/verify",
+    );
+    expect(badge).toHaveAttribute("target", "_blank");
+    expect(badge).toHaveAccessibleName(/how to verify it yourself/i);
   });
 
   it("refreshes the model privacy label when generation model settings change", async () => {
@@ -632,9 +739,15 @@ describe("AgentWorkspace", () => {
     expect(await screen.findByText("Approval required")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Explain first" }));
 
+    // The explanation comes from the generation model, scoped to this
+    // request — not canned copy.
+    expect(mocks.explainAgentApproval).toHaveBeenCalledWith({
+      description: "Security scan requires approval.",
+      command: "npm run build",
+    });
     expect(
-      screen.getByText(
-        "June is paused because this request needs your explicit permission before it can continue.",
+      await screen.findByText(
+        "This deletes the build folder, then rebuilds the project from scratch.",
       ),
     ).toBeInTheDocument();
     expect(
@@ -648,10 +761,68 @@ describe("AgentWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve once" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Always" })).toBeEnabled();
+    // Asking for an explanation never answers the approval.
     expect(mocks.gatewayRequest).not.toHaveBeenCalledWith(
       "approval.respond",
       expect.anything(),
     );
+
+    // Reopening reuses the cached answer instead of paying for another call.
+    await user.click(screen.getByRole("button", { name: "Hide explanation" }));
+    await user.click(screen.getByRole("button", { name: "Explain first" }));
+    expect(
+      await screen.findByText(
+        "This deletes the build folder, then rebuilds the project from scratch.",
+      ),
+    ).toBeInTheDocument();
+    expect(mocks.explainAgentApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to static copy when the explanation call fails", async () => {
+    const user = userEvent.setup();
+    mocks.explainAgentApproval.mockRejectedValue(new Error("offline"));
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({
+        createdAt: Date.now(),
+        prompt: "run the build",
+      }),
+    );
+
+    render(<AgentWorkspace />);
+
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "run the build",
+      }),
+    );
+    act(() => {
+      for (const handler of mocks.gatewayEventHandlers) {
+        handler({
+          type: "approval.request",
+          session_id: "runtime-session-2",
+          payload: {
+            request_id: "approval-1",
+            description: "Security scan requires approval.",
+            command: "npm run build",
+            allow_permanent: true,
+          },
+        });
+      }
+    });
+
+    expect(await screen.findByText("Approval required")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Explain first" }));
+
+    expect(
+      await screen.findByText(
+        "June is paused because this request needs your explicit permission before it can continue.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Approve once allows only this request/),
+    ).toBeInTheDocument();
   });
 
   it("omits the permanent approval explanation when Always is unavailable", async () => {
@@ -1508,6 +1679,57 @@ describe("AgentWorkspace", () => {
     );
   });
 
+  it("holds session broadcasts until the first fetch lands", async () => {
+    const sessionDetails: AgentSessionsChangedDetail[] = [];
+    const onSessionsChanged = (event: Event) =>
+      sessionDetails.push(
+        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
+      );
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+
+    // First click after app launch: the workspace mounts seeded with only the
+    // clicked session while listHermesSessions is still in flight. The sidebar
+    // replaces its list wholesale with each broadcast, so a pre-fetch
+    // broadcast would collapse it to one row and flicker it back.
+    let resolveSessions: (sessions: (typeof existingSession)[]) => void = () =>
+      undefined;
+    mocks.listHermesSessions.mockImplementation(
+      () =>
+        new Promise<(typeof existingSession)[]>((resolve) => {
+          resolveSessions = resolve;
+        }),
+    );
+    const clickedSession = {
+      id: "session-2",
+      title: "Clicked session",
+      preview: "Clicked preview",
+      last_active: "2026-06-05T12:00:00Z",
+    };
+
+    try {
+      render(<AgentWorkspace initialSession={clickedSession} />);
+
+      await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+      expect(sessionDetails).toEqual([]);
+
+      await act(async () => {
+        resolveSessions([clickedSession, existingSession]);
+      });
+
+      await waitFor(() => expect(sessionDetails.length).toBeGreaterThan(0));
+      expect(sessionDetails[0].sessions.map((session) => session.id)).toEqual([
+        "session-2",
+        "session-1",
+      ]);
+      expect(sessionDetails[0].selectedSessionId).toBe("session-2");
+    } finally {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
+    }
+  });
+
   it("scrubs working state when deleting the selected session from the session bar", async () => {
     const user = userEvent.setup();
     const sessionDetails: AgentSessionsChangedDetail[] = [];
@@ -1557,21 +1779,21 @@ describe("AgentWorkspace", () => {
       JSON.stringify({ createdAt: Date.now() }),
     );
     // rand() of 0 keeps the rotating hero suggestions in curated pool order,
-    // so the leading window (incl. "Tidy my Downloads") is what renders.
+    // so the leading window (incl. "Catch up on recent files") is what renders.
     const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
     try {
       render(<AgentWorkspace />);
       const user = userEvent.setup();
 
       await user.click(
-        await screen.findByRole("button", { name: /Tidy my Downloads/ }),
+        await screen.findByRole("button", { name: /Catch up on recent files/ }),
       );
 
       await waitFor(() =>
         expect(mocks.gatewayRequest).toHaveBeenCalledWith(
           "prompt.submit",
           expect.objectContaining({
-            text: expect.stringContaining("Downloads folder"),
+            text: expect.stringContaining("changed in the last week"),
           }),
         ),
       );
@@ -1865,6 +2087,107 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(screen.queryByText("Agent error gallery")).toBeNull(),
     );
+  });
+
+  it("does not let a stale message fetch erase a newer follow-up", async () => {
+    // The selection effect, working poll, and terminal-event refresh all
+    // fetch session messages without awaiting each other. A slow fetch that
+    // started first can resolve last; applying it as a whole-list overwrite
+    // used to erase the follow-up the newer fetch had just persisted (and
+    // whose optimistic bubble was dropped at that point) — the user's
+    // message visibly vanished until a later refresh restored it.
+    const user = userEvent.setup();
+    const oldHistory = [
+      {
+        id: "m1",
+        role: "user",
+        content: "previous request",
+        timestamp: "2026-06-04T12:00:00.000Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "previous answer",
+        timestamp: "2026-06-04T12:00:01.000Z",
+      },
+    ];
+    let resolveStale: (value: unknown) => void = () => {};
+    const stale = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    mocks.listHermesSessionMessages
+      .mockImplementationOnce(() => stale) // the mount-selection fetch hangs
+      .mockImplementation(async () => [
+        ...oldHistory,
+        {
+          id: "m3",
+          role: "user",
+          content: "follow up while racing",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "m4",
+          role: "assistant",
+          content: "raced reply",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    // Hold the submit just before completion so the working poll's interval
+    // is created on the fake clock (a real-clock interval can't be advanced).
+    let resolveEnsureSession: (value: unknown) => void = () => {};
+    mocks.ensureHermesBridgeSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveEnsureSession = resolve;
+        }),
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox"), "follow up while racing");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalled(),
+    );
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveEnsureSession({});
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "follow up while racing",
+      });
+
+      // The working poll's refresh applies the newer history (follow-up +
+      // reply persisted; the optimistic bubble is dropped against it).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(screen.getByText("raced reply")).toBeInTheDocument();
+
+      // The stale mount-time fetch finally resolves — without per-session
+      // fetch ordering this overwrote the list and the follow-up vanished.
+      await act(async () => {
+        resolveStale(oldHistory);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("follow up while racing")).toBeInTheDocument();
+      expect(screen.getByText("raced reply")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Last in the suite: mounting the workspace kicks off bridge/session
