@@ -2,7 +2,279 @@ use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use scribe_config::IssueReportsConfig;
 use scribe_domain::{DomainError, IssueReport, IssueReportSink};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Files issue reports as Issues in the os-platform tracker, tagged with the
+/// configured label (default `bug`). Attachments are uploaded first
+/// (best-effort — an unreadable upload never blocks the report; the names
+/// are listed in the body either way), then the Issue is created with
+/// `type: bug` and the label attached atomically. If the label doesn't exist
+/// in the target Project yet, the sink creates it once and retries; if even
+/// that fails, the Issue is filed without the label rather than dropping the
+/// report.
+pub struct OsPlatformIssueReportSink {
+    http: reqwest::Client,
+    api_url: String,
+    api_key: String,
+    org: String,
+    project: String,
+    label: String,
+}
+
+/// fellow's `ApiResponse` envelope — same shape as ours.
+#[derive(Deserialize)]
+struct FellowEnvelope<T> {
+    data: Option<T>,
+    success: bool,
+    message: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FellowFile {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct FellowIssue {
+    external_id: String,
+}
+
+impl OsPlatformIssueReportSink {
+    /// `None` when the tracker isn't configured — the caller falls through
+    /// to the webhook/log sinks.
+    pub fn from_config(http: reqwest::Client, config: &IssueReportsConfig) -> Option<Self> {
+        let api_url = config.os_platform_api_url.trim();
+        let api_key = config.os_platform_api_key.trim();
+        let org = config.os_platform_org.trim();
+        let project = config.os_platform_project.trim();
+        if api_url.is_empty() || api_key.is_empty() || org.is_empty() || project.is_empty() {
+            return None;
+        }
+        Some(Self {
+            http,
+            api_url: api_url.trim_end_matches('/').to_string(),
+            api_key: api_key.to_string(),
+            org: org.to_string(),
+            project: project.to_string(),
+            label: config.os_platform_label.trim().to_string(),
+        })
+    }
+
+    async fn upload_attachments(&self, report: &IssueReport) -> Vec<String> {
+        let mut file_ids = Vec::new();
+        for attachment in &report.attachments {
+            let part = match reqwest::multipart::Part::bytes(attachment.bytes.clone())
+                .file_name(attachment.name.clone())
+                .mime_str(&attachment.content_type)
+            {
+                Ok(part) => part,
+                Err(error) => {
+                    tracing::warn!(%error, name = %attachment.name, "issue_reports: skipping attachment with invalid content type");
+                    continue;
+                }
+            };
+            let form = reqwest::multipart::Form::new().part("file", part);
+            let uploaded: Result<FellowEnvelope<FellowFile>, _> = async {
+                self.http
+                    .post(format!("{}/v1/files", self.api_url))
+                    .bearer_auth(&self.api_key)
+                    .multipart(form)
+                    .send()
+                    .await?
+                    .json::<FellowEnvelope<FellowFile>>()
+                    .await
+            }
+            .await;
+            match uploaded {
+                Ok(envelope) if envelope.success => {
+                    if let Some(file) = envelope.data {
+                        file_ids.push(file.id);
+                    }
+                }
+                Ok(envelope) => {
+                    tracing::warn!(
+                        message = envelope.message.as_deref().unwrap_or(""),
+                        name = %attachment.name,
+                        "issue_reports: os-platform rejected attachment upload"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, name = %attachment.name, "issue_reports: attachment upload failed");
+                }
+            }
+        }
+        file_ids
+    }
+
+    async fn create_issue(
+        &self,
+        report: &IssueReport,
+        file_ids: &[String],
+        with_label: bool,
+    ) -> Result<FellowEnvelope<FellowIssue>, DomainError> {
+        let label_slugs: Vec<&str> = if with_label && !self.label.is_empty() {
+            vec![self.label.as_str()]
+        } else {
+            Vec::new()
+        };
+        let body = serde_json::json!({
+            "title": issue_title(&report.description),
+            "body_markdown": issue_body(report),
+            "reward_amount_units": "0",
+            "type": "bug",
+            "status": "todo",
+            "label_slugs": label_slugs,
+            "file_ids": file_ids,
+        });
+        self.http
+            .post(format!(
+                "{}/v1/orgs/{}/projects/{}/bounties",
+                self.api_url, self.org, self.project
+            ))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "issue_reports: os-platform transport error");
+                DomainError::UpstreamProvider
+            })?
+            .json::<FellowEnvelope<FellowIssue>>()
+            .await
+            .map_err(|error| {
+                tracing::error!(%error, "issue_reports: os-platform returned a malformed envelope");
+                DomainError::UpstreamProvider
+            })
+    }
+
+    /// Creates the configured label in the target Project. The color is
+    /// fixed; an "already exists" rejection is fine — the retry will
+    /// resolve the slug either way.
+    async fn ensure_label(&self) -> bool {
+        let body = serde_json::json!({
+            "name": "Bug",
+            "color": "#ef4444",
+            "slug": self.label,
+        });
+        let response = self
+            .http
+            .post(format!(
+                "{}/v1/orgs/{}/projects/{}/labels",
+                self.api_url, self.org, self.project
+            ))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await;
+        match response {
+            Ok(response) => response.status().is_success(),
+            Err(error) => {
+                tracing::warn!(%error, "issue_reports: could not create the report label");
+                false
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl IssueReportSink for OsPlatformIssueReportSink {
+    async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
+        let file_ids = self.upload_attachments(&report).await;
+
+        let mut envelope = self.create_issue(&report, &file_ids, true).await?;
+        if !envelope.success && envelope.message.as_deref().is_some_and(is_missing_label) {
+            // First report into this Project: the label doesn't exist yet.
+            // Create it and retry once; if the label can't be created, file
+            // the Issue without it — losing the tag beats losing the report.
+            let labeled = self.ensure_label().await;
+            envelope = self.create_issue(&report, &file_ids, labeled).await?;
+            if !envelope.success && labeled {
+                envelope = self.create_issue(&report, &file_ids, false).await?;
+            }
+        }
+        if !envelope.success {
+            tracing::error!(
+                message = envelope.message.as_deref().unwrap_or(""),
+                "issue_reports: os-platform rejected the issue"
+            );
+            return Err(DomainError::UpstreamProvider);
+        }
+        tracing::info!(
+            issue = envelope
+                .data
+                .as_ref()
+                .map_or("", |issue| issue.external_id.as_str()),
+            user_id = %report.user_id.0,
+            attachments = file_ids.len(),
+            "issue_reports: report filed as an os-platform issue"
+        );
+        Ok(())
+    }
+}
+
+fn is_missing_label(message: &str) -> bool {
+    message.contains("label(s) not found")
+}
+
+const ISSUE_TITLE_MAX_CHARS: usize = 120;
+
+/// First line of the description, truncated on a char boundary. The full
+/// description is always in the body.
+fn issue_title(description: &str) -> String {
+    let first_line = description
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("(no description)");
+    let mut title = String::with_capacity(ISSUE_TITLE_MAX_CHARS + 16);
+    title.push_str("June report: ");
+    for (count, ch) in first_line.chars().enumerate() {
+        if count >= ISSUE_TITLE_MAX_CHARS {
+            title.push('…');
+            break;
+        }
+        title.push(ch);
+    }
+    title
+}
+
+fn issue_body(report: &IssueReport) -> String {
+    use std::fmt::Write as _;
+
+    let mut body = String::new();
+    body.push_str("## Report\n\n");
+    body.push_str(report.description.trim());
+    body.push('\n');
+    if let Some(diagnosis) = report
+        .agent_diagnosis
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        body.push_str("\n## Agent diagnosis\n\n");
+        body.push_str(diagnosis);
+        body.push('\n');
+    }
+    body.push_str("\n## Metadata\n\n");
+    let _ = writeln!(body, "- Reporter: `{}`", report.user_id.0);
+    if let Some(session_id) = report.session_id.as_deref().filter(|v| !v.is_empty()) {
+        let _ = writeln!(body, "- Session: `{session_id}`");
+    }
+    if let Some(version) = report.app_version.as_deref().filter(|v| !v.is_empty()) {
+        let _ = writeln!(body, "- App version: {version}");
+    }
+    if let Some(platform) = report.platform.as_deref().filter(|v| !v.is_empty()) {
+        let _ = writeln!(body, "- Platform: {platform}");
+    }
+    if !report.attachment_names.is_empty() {
+        let _ = writeln!(
+            body,
+            "- Attachments named by the user: {}",
+            report.attachment_names.join(", ")
+        );
+    }
+    body
+}
 
 /// Forwards issue reports as a JSON POST to the configured webhook.
 pub struct WebhookIssueReportSink {
@@ -151,6 +423,7 @@ mod tests {
     fn from_config_requires_a_webhook_url() {
         let config = IssueReportsConfig {
             webhook_url: "  ".to_string(),
+            ..Default::default()
         };
         assert!(WebhookIssueReportSink::from_config(reqwest::Client::new(), &config).is_none());
     }
@@ -178,6 +451,7 @@ mod tests {
 
         let config = IssueReportsConfig {
             webhook_url: format!("{}/hook", server.uri()),
+            ..Default::default()
         };
         let sink = WebhookIssueReportSink::from_config(reqwest::Client::new(), &config)
             .expect("configured sink");
@@ -195,6 +469,7 @@ mod tests {
 
         let config = IssueReportsConfig {
             webhook_url: server.uri(),
+            ..Default::default()
         };
         let sink = WebhookIssueReportSink::from_config(reqwest::Client::new(), &config)
             .expect("configured sink");
@@ -203,5 +478,204 @@ mod tests {
             sink.deliver(report()).await,
             Err(DomainError::UpstreamProvider)
         );
+    }
+}
+
+#[cfg(test)]
+mod os_platform_tests {
+    use super::*;
+    use scribe_domain::UserId;
+    use wiremock::matchers::{body_partial_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn report() -> IssueReport {
+        IssueReport {
+            user_id: UserId("usr_test".to_string()),
+            description: "The recorder freezes\nwhen I pause it".to_string(),
+            agent_diagnosis: Some("Likely the audio capture thread".to_string()),
+            attachment_names: vec!["screenshot.png".to_string()],
+            attachments: vec![scribe_domain::IssueReportAttachment {
+                name: "screenshot.png".to_string(),
+                content_type: "image/png".to_string(),
+                bytes: b"png-bytes".to_vec(),
+            }],
+            session_id: Some("session-1".to_string()),
+            app_version: Some("0.0.7".to_string()),
+            platform: Some("macos".to_string()),
+        }
+    }
+
+    fn config(api_url: &str) -> IssueReportsConfig {
+        IssueReportsConfig {
+            os_platform_api_url: api_url.to_string(),
+            os_platform_api_key: "osk_test".to_string(),
+            os_platform_org: "open-software".to_string(),
+            os_platform_project: "june".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn sink(server: &MockServer) -> OsPlatformIssueReportSink {
+        OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &config(&server.uri()))
+            .expect("configured sink")
+    }
+
+    fn issue_created() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": { "external_id": "OSN-7" },
+            "success": true,
+        }))
+    }
+
+    fn label_missing() -> ResponseTemplate {
+        ResponseTemplate::new(422).set_body_json(serde_json::json!({
+            "data": null,
+            "success": false,
+            "error_code": 4201,
+            "message": "label(s) not found in project: bug",
+        }))
+    }
+
+    #[test]
+    fn os_platform_sink_requires_full_config() {
+        let mut incomplete = config("https://fellow.test");
+        incomplete.os_platform_api_key = String::new();
+        assert!(
+            OsPlatformIssueReportSink::from_config(reqwest::Client::new(), &incomplete).is_none()
+        );
+        assert!(
+            OsPlatformIssueReportSink::from_config(
+                reqwest::Client::new(),
+                &IssueReportsConfig::default()
+            )
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn os_platform_sink_files_a_bug_tagged_issue_with_attachments() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "id": "fil_1" },
+                "success": true,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .and(body_partial_json(serde_json::json!({
+                "title": "June report: The recorder freezes",
+                "reward_amount_units": "0",
+                "type": "bug",
+                "status": "todo",
+                "label_slugs": ["bug"],
+                "file_ids": ["fil_1"],
+            })))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(sink(&server).deliver(report()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn os_platform_sink_creates_the_label_on_first_use() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        // First create: label unknown. After the label is created, the retry
+        // succeeds — and the attachment-upload failure above never blocked
+        // the report (file_ids just ends up empty).
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .respond_with(label_missing())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/labels"))
+            .and(body_partial_json(serde_json::json!({
+                "name": "Bug",
+                "slug": "bug",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "slug": "bug" },
+                "success": true,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .and(body_partial_json(serde_json::json!({
+                "label_slugs": ["bug"],
+                "file_ids": [],
+            })))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(sink(&server).deliver(report()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn os_platform_sink_files_unlabelled_when_the_label_cannot_be_created() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .respond_with(label_missing())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/labels"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .and(body_partial_json(serde_json::json!({ "label_slugs": [] })))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        assert!(sink(&server).deliver(report()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn os_platform_sink_surfaces_rejections_as_upstream_errors() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/files"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "data": null,
+                "success": false,
+                "error_code": 3001,
+                "message": "caller is not an org member",
+            })))
+            .mount(&server)
+            .await;
+
+        let result = sink(&server).deliver(report()).await;
+        assert!(matches!(result, Err(DomainError::UpstreamProvider)));
     }
 }
