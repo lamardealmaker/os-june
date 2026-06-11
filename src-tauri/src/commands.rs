@@ -25,16 +25,16 @@ use crate::{
             CheckRecordingSourceReadinessRequest, CreateAgentTaskRequest,
             CreateDictionaryEntryRequest, CreateFolderRequest, CreateNoteRequest,
             DeleteDictionaryEntryRequest, DeleteFolderRequest, DeleteNoteRequest,
-            DictionaryEntryDto, FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest,
-            ListNotesRequest, ListNotesResponse, MicrophonePermissionResponse, NoteDto,
-            OpenPrivacySettingsRequest, RecordingSessionDto, RecordingSource, RecordingSourceMode,
-            RecordingSourceReadinessDto, RecordingStatusDto, RemoveNoteFromFolderRequest,
-            RemoveSessionFromFolderRequest, RenameFolderRequest, RetryProcessingRequest,
-            SaveAgentAssistantMessageRequest, SaveAgentHermesSessionRequest,
-            SendAgentMessageRequest, SessionFolderDto, SessionRequest, SourceReadinessDto,
-            StartRecordingRequest, SubmitIssueReportRequest, SubmitIssueReportResponse,
-            SuggestAgentSessionTitleRequest, SuggestAgentSessionTitleResponse,
-            UpdateDictionaryEntryRequest, UpdateNoteRequest,
+            DictionaryEntryDto, ExplainAgentApprovalRequest, ExplainAgentApprovalResponse,
+            FinishRecordingResponse, GetAgentTaskRequest, GetNoteRequest, ListNotesRequest,
+            ListNotesResponse, MicrophonePermissionResponse, NoteDto, OpenPrivacySettingsRequest,
+            RecordingSessionDto, RecordingSource, RecordingSourceMode, RecordingSourceReadinessDto,
+            RecordingStatusDto, RemoveNoteFromFolderRequest, RemoveSessionFromFolderRequest,
+            RenameFolderRequest, RetryProcessingRequest, SaveAgentAssistantMessageRequest,
+            SaveAgentHermesSessionRequest, SendAgentMessageRequest, SessionFolderDto,
+            SessionRequest, SourceReadinessDto, StartRecordingRequest, SubmitIssueReportRequest,
+            SubmitIssueReportResponse, SuggestAgentSessionTitleRequest,
+            SuggestAgentSessionTitleResponse, UpdateDictionaryEntryRequest, UpdateNoteRequest,
         },
     },
 };
@@ -397,6 +397,16 @@ pub async fn submit_issue_report(
 ) -> Result<SubmitIssueReportResponse, AppError> {
     let app_version = app.package_info().version.to_string();
     crate::scribe_api::submit_issue_report(&request, &app_version).await
+}
+
+#[tauri::command]
+pub async fn explain_agent_approval(
+    request: ExplainAgentApprovalRequest,
+) -> Result<ExplainAgentApprovalResponse, AppError> {
+    let explanation =
+        crate::scribe_api::explain_agent_approval(&request.description, request.command.as_deref())
+            .await?;
+    Ok(ExplainAgentApprovalResponse { explanation })
 }
 
 #[tauri::command]
