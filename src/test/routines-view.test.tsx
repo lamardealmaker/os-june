@@ -129,6 +129,7 @@ describe("RoutinesView", () => {
       <RoutinesView
         onCreateRoutine={onCreateRoutine}
         onEditRoutine={vi.fn()}
+        onOpenRun={vi.fn()}
       />,
     );
 
@@ -166,6 +167,7 @@ describe("RoutinesView", () => {
       <RoutinesView
         onCreateRoutine={onCreateRoutine}
         onEditRoutine={vi.fn()}
+        onOpenRun={vi.fn()}
       />,
     );
 
@@ -212,7 +214,13 @@ describe("RoutinesView", () => {
         no_agent: true,
       }),
     ]);
-    render(<RoutinesView onCreateRoutine={vi.fn()} onEditRoutine={vi.fn()} />);
+    render(
+      <RoutinesView
+        onCreateRoutine={vi.fn()}
+        onEditRoutine={vi.fn()}
+        onOpenRun={vi.fn()}
+      />,
+    );
 
     expect(await screen.findByText("Nightly cleanup")).toBeInTheDocument();
     // Badges for the toolset-widened and the script-backed routines, none
@@ -438,7 +446,9 @@ describe("RoutinesView", () => {
     // embedded in the cron session id), not the session's own title.
     expect(within(history).getByText("Morning summary")).toBeInTheDocument();
     expect(
-      within(history).getByText("Here is today's summary of your unread notes."),
+      within(history).getByText(
+        "Here is today's summary of your unread notes.",
+      ),
     ).toBeInTheDocument();
 
     await userEvent.click(
