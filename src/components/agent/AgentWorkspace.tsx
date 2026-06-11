@@ -46,7 +46,7 @@ import { IconShieldCrossed } from "central-icons/IconShieldCrossed";
 import { IconStop } from "central-icons/IconStop";
 import { IconTrashCan } from "central-icons/IconTrashCan";
 import { IconPangolin } from "../icons/IconPangolin";
-import { PangolinSpinner } from "../PangolinSpinner";
+import { DotSpinner } from "../DotSpinner";
 import {
   type CSSProperties,
   type FormEvent,
@@ -90,6 +90,7 @@ import {
   osAccountsTopUp,
   providerModelSettings,
   retryAgentTask,
+  scribeOpenVerifyPage,
   sendAgentMessage,
   startHermesBridge,
   submitIssueReport,
@@ -142,6 +143,12 @@ import {
   type ProviderModelSettingsChangedDetail,
 } from "../../lib/model-privacy";
 import { messageFromError } from "../../lib/errors";
+import { hermesConnectionForMode } from "../../lib/hermes-connection";
+import {
+  forgetSessionMode,
+  rememberSessionMode,
+  sessionUnrestricted,
+} from "../../lib/agent-session-modes";
 import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
@@ -666,9 +673,73 @@ type AgentWorkspaceProps = {
 };
 
 // Module-scoped so a remount of AgentWorkspace (e.g. navigating away from the
-// agent view and back) does not re-submit a mascot reply that App still holds
+// agent view and back) does not re-submit an agent HUD reply that App still holds
 // in its pendingReply state.
-const handledMascotReplyIds = new Set<string>();
+const handledHudReplyIds = new Set<string>();
+
+// Mid-run continuity across remounts. While June is working, a session has
+// state that exists nowhere outside this component: the optimistic list entry
+// (title + preview), the just-sent user bubble Hermes hasn't persisted yet,
+// the working/waiting flags that drive the reconcile poll, the stored→runtime
+// session mapping, the buffered live events, and the title override.
+// Navigating away (e.g. to Settings) unmounts the workspace; without this
+// snapshot the remount restores only the selected id from localStorage, and a
+// session whose first turn hasn't persisted renders as an empty "Untitled
+// session" that nothing ever polls back to life. Captured on unmount for the
+// sessions with active work, hydrated by the next mount's state initializers
+// so the working poll picks the run straight back up.
+type AgentSessionContinuity = {
+  sessionItems: HermesSessionInfo[];
+  pendingMessages: Record<string, HermesSessionMessage[]>;
+  workingSessionIds: string[];
+  waitingSessionIds: string[];
+  runtimeSessionIds: Record<string, string>;
+  liveEvents: Record<string, LiveHermesEvent[]>;
+  titleOverrides: Record<string, string>;
+};
+
+let sessionContinuity: AgentSessionContinuity | null = null;
+
+function captureSessionContinuity(state: {
+  sessionItems: HermesSessionInfo[];
+  pendingMessages: Record<string, HermesSessionMessage[]>;
+  workingSessionIds: Set<string>;
+  waitingSessionIds: Set<string>;
+  runtimeSessionIds: Record<string, string>;
+  liveEvents: Record<string, LiveHermesEvent[]>;
+  titleOverrides: Record<string, string>;
+}): AgentSessionContinuity | null {
+  const activeIds = new Set([
+    ...state.workingSessionIds,
+    ...state.waitingSessionIds,
+  ]);
+  for (const [sessionId, pending] of Object.entries(state.pendingMessages)) {
+    if (pending.length > 0) activeIds.add(sessionId);
+  }
+  if (activeIds.size === 0) return null;
+  const pick = <T,>(record: Record<string, T>) =>
+    Object.fromEntries(
+      Object.entries(record).filter(([sessionId]) => activeIds.has(sessionId)),
+    );
+  return {
+    sessionItems: state.sessionItems.filter((session) =>
+      activeIds.has(session.id),
+    ),
+    pendingMessages: pick(state.pendingMessages),
+    workingSessionIds: [...state.workingSessionIds],
+    waitingSessionIds: [...state.waitingSessionIds],
+    runtimeSessionIds: pick(state.runtimeSessionIds),
+    liveEvents: pick(state.liveEvents),
+    titleOverrides: pick(state.titleOverrides),
+  };
+}
+
+/** Test hook: the snapshot is module state, so a test that unmounts with a
+ * working session (testing-library auto-cleanup) would otherwise leak it into
+ * the next test's mount. */
+export function resetAgentSessionContinuity() {
+  sessionContinuity = null;
+}
 
 export function AgentWorkspace({
   initialSession,
@@ -676,6 +747,9 @@ export function AgentWorkspace({
   origin,
 }: AgentWorkspaceProps = {}) {
   const initialSessionId = initialSession?.id;
+  // Read once per mount (lazy initializer): the continuity snapshot the
+  // previous mount captured on unmount, if any session was still mid-run.
+  const [continuity] = useState(() => sessionContinuity);
   const [tasks, setTasks] = useState<AgentTaskDto[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string>();
   const [activePanel, setActivePanel] = useState<AgentPanel>("chat");
@@ -713,7 +787,15 @@ export function AgentWorkspace({
   const sandboxMenuWasOpenRef = useRef(false);
   const [hermesSessionItems, setHermesSessionItems] = useState<
     HermesSessionInfo[]
-  >(() => (initialSession ? [initialSession] : []));
+  >(() => {
+    const restored = continuity?.sessionItems ?? [];
+    if (!initialSession) return restored;
+    return [
+      initialSession,
+      ...restored.filter((session) => session.id !== initialSession.id),
+    ];
+  });
+  const hermesSessionItemsRef = useRef(hermesSessionItems);
   // False until the first listHermesSessions fetch lands. Until then the
   // items above only hold the mount seed (the clicked session, or nothing),
   // and broadcasting that would wipe the sidebar's already-loaded list.
@@ -754,28 +836,33 @@ export function AgentWorkspace({
   >({});
   const [pendingHermesMessages, setPendingHermesMessages] = useState<
     Record<string, HermesSessionMessage[]>
-  >({});
+  >(() => continuity?.pendingMessages ?? {});
   const pendingHermesMessagesRef = useRef<
     Record<string, HermesSessionMessage[]>
-  >({});
+  >(pendingHermesMessages);
+  // Per-session ordering for message fetches: the sequence handed out at
+  // fetch start, and the highest sequence whose response was applied. See
+  // listSessionMessagesOrdered.
+  const sessionMessagesFetchSeqRef = useRef<Map<string, number>>(new Map());
+  const sessionMessagesAppliedSeqRef = useRef<Map<string, number>>(new Map());
   const [hermesSessionsLoading, setHermesSessionsLoading] = useState(false);
   const [liveEvents, setLiveEvents] = useState<
     Record<string, LiveHermesEvent[]>
-  >({});
+  >(() => continuity?.liveEvents ?? {});
   const [workingTaskIds, setWorkingTaskIds] = useState<Set<string>>(
     () => new Set(),
   );
   const [workingSessionIds, setWorkingSessionIds] = useState<Set<string>>(
-    () => new Set(),
+    () => new Set(continuity?.workingSessionIds),
   );
-  const workingSessionIdsRef = useRef<Set<string>>(new Set());
+  const workingSessionIdsRef = useRef<Set<string>>(workingSessionIds);
   const [waitingSessionIds, setWaitingSessionIds] = useState<Set<string>>(
-    () => new Set(),
+    () => new Set(continuity?.waitingSessionIds),
   );
-  const waitingSessionIdsRef = useRef<Set<string>>(new Set());
+  const waitingSessionIdsRef = useRef<Set<string>>(waitingSessionIds);
   const [runtimeSessionIds, setRuntimeSessionIds] = useState<
     Record<string, string>
-  >({});
+  >(() => continuity?.runtimeSessionIds ?? {});
   const runtimeSessionIdsRef = useRef(runtimeSessionIds);
   // Consecutive runtime-reconcile polls in which a locally-working session was
   // absent from the gateway's live list. Cleared the moment it's seen live.
@@ -790,6 +877,8 @@ export function AgentWorkspace({
   >(null);
   const [generationPrivacyBadge, setGenerationPrivacyBadge] =
     useState<ModelPrivacyBadge>();
+  // Attestation walkthrough URL served by the backend (same page as Settings
+  // → About → Verify server); the privacy badge links to it when known.
   const [capabilityQuery, setCapabilityQuery] = useState("");
   const [capabilityLoading, setCapabilityLoading] = useState(false);
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
@@ -821,17 +910,22 @@ export function AgentWorkspace({
     AgentChatGallerySection[] | null
   >(null);
   const [galleryErrors, setGalleryErrors] = useState(false);
-  const gatewayRef = useRef<HermesGatewayClient | null>(null);
+  // One gateway client per write-access mode: the sandboxed and unrestricted
+  // runtime processes run side by side, each with its own socket. Sessions
+  // route to the gateway matching their recorded mode.
+  const gatewaysRef = useRef<Map<boolean, HermesGatewayClient>>(new Map());
   // The gateway's close listener is registered once per client instance, so
   // it routes through this ref to always run the latest render's recovery
   // closure (see recoverFromGatewayClose).
-  const gatewayCloseHandlerRef = useRef(() => {});
-  const gatewayRecoveringRef = useRef(false);
+  const gatewayCloseHandlerRef = useRef((_fullMode: boolean) => {});
+  // Per-mode: both gateways can drop together (network reconnect), and one
+  // mode's in-flight recovery must not swallow the other's only onClose.
+  const gatewayRecoveringRef = useRef<Set<boolean>>(new Set());
   // One live gateway subscription per Hermes session. A follow-up send while
   // the previous turn is still streaming must replace the old handler, not
   // stack a second one — otherwise every event lands twice in liveEvents.
   const sessionGatewayUnlistenRef = useRef<Map<string, () => void>>(new Map());
-  const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>({});
+  const liveEventsRef = useRef<Record<string, LiveHermesEvent[]>>(liveEvents);
   const hydratedTaskIdsRef = useRef<Set<string>>(new Set());
   // Tasks whose hydration fetch has resolved (hydratedTaskIdsRef only says
   // the fetch *started*) — the scroll-settling logic needs the landing.
@@ -851,7 +945,9 @@ export function AgentWorkspace({
   // chat hands over to a fresh thread — not when the hero is dismissed by
   // selecting an existing chat from the sidebar (that should swap instantly).
   const heroExitViaThreadRef = useRef(false);
-  const sessionTitleOverridesRef = useRef<Record<string, string>>({});
+  const sessionTitleOverridesRef = useRef<Record<string, string>>(
+    continuity?.titleOverrides ?? {},
+  );
   const titleSuggestionSessionIdsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<HTMLDivElement | null>(null);
   const agentScrollRef = useRef<HTMLDivElement | null>(null);
@@ -867,7 +963,9 @@ export function AgentWorkspace({
     workingSessionIdsRef.current = workingSessionIds;
     waitingSessionIdsRef.current = waitingSessionIds;
     pendingHermesMessagesRef.current = pendingHermesMessages;
+    hermesSessionItemsRef.current = hermesSessionItems;
   }, [
+    hermesSessionItems,
     pendingHermesMessages,
     selectedHermesSessionId,
     waitingSessionIds,
@@ -1275,9 +1373,9 @@ export function AgentWorkspace({
 
   useEffect(() => {
     if (!pendingReply?.text.trim()) return;
-    if (handledMascotReplyIds.has(pendingReply.requestId)) return;
-    handledMascotReplyIds.add(pendingReply.requestId);
-    void submitMascotReply(pendingReply);
+    if (handledHudReplyIds.has(pendingReply.requestId)) return;
+    handledHudReplyIds.add(pendingReply.requestId);
+    void submitHudReply(pendingReply);
   }, [pendingReply]);
 
   useEffect(() => {
@@ -1313,8 +1411,8 @@ export function AgentWorkspace({
       startNewTask,
       removeHermesSessionLocally,
     };
-    gatewayCloseHandlerRef.current = () => {
-      void recoverFromGatewayClose();
+    gatewayCloseHandlerRef.current = (fullMode: boolean) => {
+      void recoverFromGatewayClose(fullMode);
     };
   });
 
@@ -1351,9 +1449,9 @@ export function AgentWorkspace({
   useEffect(() => {
     if (!bridge.running || !selectedHermesSessionId) return;
     let cancelled = false;
-    listHermesSessionMessages(selectedHermesSessionId)
+    listSessionMessagesOrdered(selectedHermesSessionId)
       .then((messages) => {
-        if (cancelled) return;
+        if (cancelled || !messages) return;
         const retainedPending = retainUnpersistedPendingMessages(
           pendingHermesMessagesRef.current[selectedHermesSessionId] ?? [],
           messages,
@@ -1448,6 +1546,13 @@ export function AgentWorkspace({
 
   useEffect(() => {
     let cancelled = false;
+    // This mount owns the snapshot now — consume it so it can't hydrate a
+    // second mount (error-boundary remount, overlapping test renders) with
+    // data this mount is about to mutate. Consumed here rather than in the
+    // continuity initializer because StrictMode double-invokes lazy
+    // initializers, which must stay pure; the unmount capture below writes
+    // a fresh snapshot either way.
+    sessionContinuity = null;
     void (async () => {
       try {
         const status = await hermesBridgeStatus();
@@ -1459,7 +1564,20 @@ export function AgentWorkspace({
     })();
     return () => {
       cancelled = true;
-      gatewayRef.current?.close();
+      // Keep any mid-run session alive for the next mount before the
+      // gateways (and with them the live event streams) go away.
+      sessionContinuity = captureSessionContinuity({
+        sessionItems: hermesSessionItemsRef.current,
+        pendingMessages: pendingHermesMessagesRef.current,
+        workingSessionIds: workingSessionIdsRef.current,
+        waitingSessionIds: waitingSessionIdsRef.current,
+        runtimeSessionIds: runtimeSessionIdsRef.current,
+        liveEvents: liveEventsRef.current,
+        titleOverrides: sessionTitleOverridesRef.current,
+      });
+      for (const gateway of gatewaysRef.current.values()) {
+        gateway.close();
+      }
     };
   }, []);
 
@@ -1680,7 +1798,7 @@ export function AgentWorkspace({
     }
   }
 
-  async function submitMascotReply(reply: AgentReplyDetail) {
+  async function submitHudReply(reply: AgentReplyDetail) {
     const message = reply.text.trim();
     if (!message) return;
     if (submitting || importingFiles) {
@@ -1896,11 +2014,15 @@ export function AgentWorkspace({
       targetSessionId || options?.issueReport
         ? undefined
         : agentSessionTitleForPrompt(content);
-    // Only a session being created applies the unrestricted opt-in;
-    // follow-ups on existing sessions never change the runtime's mode under
-    // them.
+    // The Unrestricted opt-in is made per session: a new session applies the
+    // picker draft, and a follow-up routes to the runtime process matching
+    // the mode its session was created with. Without this, one Unrestricted
+    // session would leave the runtime unsandboxed under every other
+    // session's follow-ups.
     const gateway = await ensureHermesGateway(
-      targetSessionId ? undefined : fullModeDraftRef.current,
+      targetSessionId
+        ? sessionUnrestricted(targetSessionId)
+        : fullModeDraftRef.current,
     );
     const sessionTitle = titlePromise ? await titlePromise : undefined;
     const created = targetSessionId
@@ -1916,6 +2038,9 @@ export function AgentWorkspace({
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
     if (options?.issueReport && !targetSessionId) {
       pendingIssueReportsRef.current.set(storedSessionId, options.issueReport);
+    }
+    if (!targetSessionId) {
+      rememberSessionMode(storedSessionId, fullModeDraftRef.current);
     }
     const sessionDisplayTitle = options?.issueReport
       ? "Issue report"
@@ -2113,31 +2238,29 @@ export function AgentWorkspace({
     }
   }
 
-  // `fullMode` is an explicit per-new-session choice: when the running
-  // runtime's mode differs, the backend restarts it (the sandbox is applied at
-  // spawn and can't change on a live process). Callers acting on an existing
-  // session pass undefined and reuse whatever runtime is up.
-  async function ensureHermesGateway(fullMode?: boolean) {
-    let current = bridge.running ? bridge : await startBridge(fullMode);
-    if (
-      fullMode !== undefined &&
-      current.connection &&
-      Boolean(current.connection.fullMode) !== fullMode
-    ) {
-      // Close the gateway socket before the restart kills the old process, so
-      // the drop reads as intentional and doesn't trigger close-recovery.
-      gatewayRef.current?.close();
-      current = await startBridge(fullMode);
+  // Returns the gateway for the given write-access mode, starting that
+  // mode's runtime process if it isn't up. The two modes run side by side
+  // (the sandbox is applied at spawn and can't change on a live process, so
+  // per-session modes mean a process per mode) — ensuring one never touches
+  // the other's process or in-flight work.
+  async function ensureHermesGateway(fullMode = false) {
+    let connection = hermesConnectionForMode(
+      bridge.running ? bridge : undefined,
+      fullMode,
+    );
+    if (!connection) {
+      const next = await startBridge(fullMode);
+      connection = hermesConnectionForMode(next, fullMode);
     }
-    const wsUrl = current.connection?.wsUrl;
+    const wsUrl = connection?.wsUrl;
     if (!wsUrl) throw new Error("Hermes bridge did not return a gateway URL.");
-    let gateway = gatewayRef.current;
+    let gateway = gatewaysRef.current.get(fullMode);
     if (!gateway) {
       gateway = new HermesGatewayClient();
-      gatewayRef.current = gateway;
+      gatewaysRef.current.set(fullMode, gateway);
       // Fires only on unexpected drops — the unmount close() detaches the
       // socket first, and a superseded socket never notifies.
-      gateway.onClose(() => gatewayCloseHandlerRef.current());
+      gateway.onClose(() => gatewayCloseHandlerRef.current(fullMode));
     }
     await gateway.connect(wsUrl);
     return gateway;
@@ -2160,17 +2283,19 @@ export function AgentWorkspace({
   // session would otherwise stay "working" (and broadcast "June is working.")
   // forever. Try to reconnect and resubscribe the active runtime sessions;
   // either way, refresh them immediately so the working-gated poll reconciles
-  // their true state from persisted messages.
-  async function recoverFromGatewayClose() {
-    if (gatewayRecoveringRef.current) return;
-    const activeSessionIds = new Set([
-      ...workingSessionIdsRef.current,
-      ...waitingSessionIdsRef.current,
-    ]);
+  // their true state from persisted messages. Only the dropped mode's
+  // gateway is rebuilt — sessions of that mode are the ones it served.
+  async function recoverFromGatewayClose(fullMode: boolean) {
+    if (gatewayRecoveringRef.current.has(fullMode)) return;
+    const activeSessionIds = new Set(
+      [...workingSessionIdsRef.current, ...waitingSessionIdsRef.current].filter(
+        (sessionId) => sessionUnrestricted(sessionId) === fullMode,
+      ),
+    );
     if (!activeSessionIds.size) return;
-    gatewayRecoveringRef.current = true;
+    gatewayRecoveringRef.current.add(fullMode);
     try {
-      const gateway = await ensureHermesGateway();
+      const gateway = await ensureHermesGateway(fullMode);
       await Promise.all(
         Array.from(activeSessionIds).map(async (sessionId) => {
           try {
@@ -2193,7 +2318,7 @@ export function AgentWorkspace({
     } catch {
       // Reconnect failed — fall back to the persisted-message poll.
     } finally {
-      gatewayRecoveringRef.current = false;
+      gatewayRecoveringRef.current.delete(fullMode);
     }
     for (const sessionId of activeSessionIds) {
       void refreshHermesSession(sessionId);
@@ -2232,21 +2357,36 @@ export function AgentWorkspace({
       if (!working.includes(sessionId)) misses.delete(sessionId);
     }
     if (working.length === 0) return;
-    let rows: Array<{ id?: string; session_key?: string; status?: string }>;
-    try {
-      const gateway = await ensureHermesGateway();
-      const response = await gateway.request<{
-        sessions?: Array<{
-          id?: string;
-          session_key?: string;
-          status?: string;
-        }>;
-      }>("session.active_list", {});
-      rows = Array.isArray(response?.sessions) ? response.sessions : [];
-    } catch {
-      // Can't reach the runtime — keep the current state rather than guess.
-      return;
+    // Working sessions may span both runtime processes; ask each mode that
+    // has one and union the answers. A mode we can't reach keeps its
+    // sessions' current state rather than guessing — so a one-gateway
+    // failure must not mark the other mode's sessions dead either.
+    const modes = Array.from(
+      new Set(working.map((sessionId) => sessionUnrestricted(sessionId))),
+    );
+    let rows: Array<{ id?: string; session_key?: string; status?: string }> =
+      [];
+    const reachableModes = new Set<boolean>();
+    for (const mode of modes) {
+      try {
+        const gateway = await ensureHermesGateway(mode);
+        const response = await gateway.request<{
+          sessions?: Array<{
+            id?: string;
+            session_key?: string;
+            status?: string;
+          }>;
+        }>("session.active_list", {});
+        rows = rows.concat(
+          Array.isArray(response?.sessions) ? response.sessions : [],
+        );
+        reachableModes.add(mode);
+      } catch {
+        // Can't reach this runtime — keep ITS sessions' current state rather
+        // than guess, while the reachable mode still reconciles below.
+      }
     }
+    if (reachableModes.size === 0) return;
     const live = new Set<string>();
     for (const row of rows) {
       // "idle" means the runtime session exists but isn't processing a turn.
@@ -2255,6 +2395,9 @@ export function AgentWorkspace({
       if (row.id) live.add(String(row.id));
     }
     for (const sessionId of working) {
+      // Sessions of an unreachable mode were not in any answer we got;
+      // counting them as misses would mark live work dead.
+      if (!reachableModes.has(sessionUnrestricted(sessionId))) continue;
       const runtimeSessionId = runtimeSessionIdsRef.current[sessionId];
       if (
         live.has(sessionId) ||
@@ -2285,9 +2428,30 @@ export function AgentWorkspace({
     }
   }
 
+  // Message fetches for one session can overlap: the selection effect, the
+  // 2.5s working poll, and the terminal-event refresh all call
+  // listHermesSessionMessages without awaiting each other, and each applies
+  // its response as a whole-list overwrite. Responses can land out of order
+  // (a slow fetch started before a fast one resolves after it), so without
+  // ordering a stale list clobbers a newer one — the classic symptom is a
+  // just-sent user message vanishing (its pending bubble was dropped when the
+  // newer fetch persisted it) until a later refresh restores it. Fetches are
+  // stamped with a per-session sequence at start; a response only applies if
+  // no later-started fetch has applied first.
+  async function listSessionMessagesOrdered(sessionId: string) {
+    const seq = (sessionMessagesFetchSeqRef.current.get(sessionId) ?? 0) + 1;
+    sessionMessagesFetchSeqRef.current.set(sessionId, seq);
+    const messages = await listHermesSessionMessages(sessionId);
+    const applied = sessionMessagesAppliedSeqRef.current.get(sessionId) ?? 0;
+    if (seq < applied) return undefined;
+    sessionMessagesAppliedSeqRef.current.set(sessionId, seq);
+    return messages;
+  }
+
   async function refreshHermesSession(sessionId: string) {
     try {
-      const messages = await listHermesSessionMessages(sessionId);
+      const messages = await listSessionMessagesOrdered(sessionId);
+      if (!messages) return;
       const retainedPending = retainUnpersistedPendingMessages(
         pendingHermesMessagesRef.current[sessionId] ?? [],
         messages,
@@ -2340,10 +2504,13 @@ export function AgentWorkspace({
     sessionId: string,
     requestId: string,
     choice: AgentApprovalChoice,
+    unrestricted = false,
   ) {
     setApprovalSubmitting((current) => ({ ...current, [requestId]: choice }));
     try {
-      const gateway = await ensureHermesGateway();
+      // The approval lives in the runtime process that asked, so the
+      // response must go out on that mode's gateway.
+      const gateway = await ensureHermesGateway(unrestricted);
       await gateway.request("approval.respond", {
         session_id: sessionId,
         choice,
@@ -2392,10 +2559,11 @@ export function AgentWorkspace({
     liveEventKey: string,
     requestId: string,
     answer: string,
+    unrestricted = false,
   ) {
     setClarifySubmitting((current) => ({ ...current, [requestId]: answer }));
     try {
-      const gateway = await ensureHermesGateway();
+      const gateway = await ensureHermesGateway(unrestricted);
       await gateway.request("clarify.respond", {
         request_id: requestId,
         answer,
@@ -2559,7 +2727,9 @@ export function AgentWorkspace({
     try {
       const runtimeSessionId = runtimeSessionIds[sessionId];
       if (runtimeSessionId) {
-        const gateway = await ensureHermesGateway();
+        const gateway = await ensureHermesGateway(
+          sessionUnrestricted(sessionId),
+        );
         await gateway.request("session.interrupt", {
           session_id: runtimeSessionId,
         });
@@ -2690,6 +2860,12 @@ export function AgentWorkspace({
       return next;
     });
     scrubHermesSessionState(sessionId);
+    // Every deletion funnels through here (the in-workspace delete and the
+    // sidebar/sessions-list AGENT_DELETE_SESSION_EVENT), so this is the one
+    // place that drops the session's Unrestricted record — a stale entry
+    // would hand full write access to any future session that recycled the
+    // id.
+    forgetSessionMode(sessionId);
   }
 
   async function deleteSelectedHermesSession(sessionId: string) {
@@ -3095,7 +3271,7 @@ export function AgentWorkspace({
               exit={{ opacity: 0 }}
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
-              <PangolinSpinner />
+              <DotSpinner />
               {busyNotice ?? SESSION_BUSY_NOTICE}
             </motion.p>
           ) : issueReportNotice ? (
@@ -3357,6 +3533,7 @@ export function AgentWorkspace({
               part.sessionId ?? selectedHermesSessionId,
               part.id,
               choice,
+              sessionUnrestricted(selectedHermesSessionId),
             )
           }
           onTopUp={() =>
@@ -3365,7 +3542,12 @@ export function AgentWorkspace({
             )
           }
           onClarify={(part, answer) =>
-            void respondToClarify(selectedHermesSessionId, part.id, answer)
+            void respondToClarify(
+              selectedHermesSessionId,
+              part.id,
+              answer,
+              sessionUnrestricted(selectedHermesSessionId),
+            )
           }
         />
       ))}
@@ -3384,7 +3566,9 @@ export function AgentWorkspace({
           />
           <div className="agent-detail-heading">
             <h2>{selectedTask.title}</h2>
-            <SafetyBadge privacyBadge={generationPrivacyBadge} />
+            <SafetyBadge
+              privacyBadge={generationPrivacyBadge}
+            />
           </div>
         </div>
         <div className="agent-actions">
@@ -3435,10 +3619,16 @@ export function AgentWorkspace({
                 sessionId,
                 part.id,
                 choice,
+                sessionUnrestricted(selectedTask.hermesSessionId),
               );
             }}
             onClarify={(part, answer) =>
-              void respondToClarify(selectedTask.id, part.id, answer)
+              void respondToClarify(
+                selectedTask.id,
+                part.id,
+                answer,
+                sessionUnrestricted(selectedTask.hermesSessionId),
+              )
             }
           />
         ))}
@@ -3466,7 +3656,14 @@ export function AgentWorkspace({
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
           privacyBadge={generationPrivacyBadge}
-          fullMode={Boolean(bridge.running && bridge.connection?.fullMode)}
+          // The badge describes the selected session, not the live runtime:
+          // every send re-enforces the session's recorded mode, so a
+          // sandboxed session stays sandboxed even while an Unrestricted
+          // runtime from another session is still up. The hero composer's
+          // picker covers the new-session draft.
+          fullMode={
+            !newSessionMode && sessionUnrestricted(selectedHermesSessionId)
+          }
           title={
             !newSessionMode && selectedHermesSessionId
               ? (selectedHermesSession?.title ?? "")
@@ -3584,34 +3781,53 @@ export function AgentWorkspace({
   );
 }
 
-function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
+// The badge's claims (zero retention, enclave inference) are verifiable, not
+// just asserted — when the backend's attestation walkthrough URL is known,
+// the badge links straight to it instead of leaving the proof buried in
+// Settings → About.
+function SafetyBadge({
+  privacyBadge,
+}: {
+  privacyBadge?: ModelPrivacyBadge;
+}) {
   if (!privacyBadge) return null;
+  const icon =
+    privacyBadge.mode === "e2ee" ? (
+      <IconLock size={13} aria-hidden />
+    ) : privacyBadge.mode === "private" ? (
+      <IconShieldAi size={13} aria-hidden />
+    ) : (
+      <IconAnonymous size={13} aria-hidden />
+    );
+  const label = (
+    <span className="agent-safety-badge-label">{privacyBadge.label}</span>
+  );
+  const description = `${privacyBadge.description} Click to see exactly what code June's server runs and how to verify it yourself.`;
+  // A button through Rust, not an anchor: the webview installs no new-window
+  // handler, so target="_blank" navigations are silently dropped.
   return (
-    <HoverTip
-      tip={privacyBadge.description}
-      className="agent-safety-badge"
-      data-mode={privacyBadge.mode}
-      tabIndex={0}
-      aria-label={`${privacyBadge.label} - ${privacyBadge.description}`}
-    >
-      {privacyBadge.mode === "e2ee" ? (
-        <IconLock size={13} aria-hidden />
-      ) : privacyBadge.mode === "private" ? (
-        <IconShieldAi size={13} aria-hidden />
-      ) : (
-        <IconAnonymous size={13} aria-hidden />
-      )}
-      <span className="agent-safety-badge-label">{privacyBadge.label}</span>
+    <HoverTip tip={description} className="agent-safety-badge-wrap">
+      <button
+        type="button"
+        className="agent-safety-badge"
+        data-mode={privacyBadge.mode}
+        onClick={() => void scribeOpenVerifyPage().catch(() => undefined)}
+        aria-label={`${privacyBadge.label} - ${description}`}
+      >
+        {icon}
+        {label}
+      </button>
     </HoverTip>
   );
 }
 
-// Honest indicator of the live runtime, not of any one session: the jail is
-// per-process, so while the user has it unrestricted every session it serves
-// runs unsandboxed.
+// Indicator of the selected session's opt-in. The jail itself is
+// per-process, but every send restarts the runtime into the target session's
+// recorded mode, so the session — not the runtime's current state — is the
+// honest unit to label.
 function UnrestrictedBadge() {
   const description =
-    "June is running without the file sandbox and can change any file your account can. Start a session with Unrestricted off to restore the sandbox.";
+    "This session runs without the file sandbox — June can change any file your account can. Sandboxed sessions keep their jail and run alongside on a separate, jailed runtime.";
   return (
     <HoverTip
       tip={description}
@@ -5235,7 +5451,7 @@ function AgentToolPartRow({
             aria-label="Running"
             title="Running"
           >
-            <PangolinSpinner />
+            <DotSpinner />
           </span>
         ) : part.status === "failed" ? (
           <span className="agent-tool-live-status" data-status="failed">

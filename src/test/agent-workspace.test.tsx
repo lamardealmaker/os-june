@@ -15,6 +15,7 @@ import {
   AGENT_SESSIONS_CHANGED_EVENT,
   AgentWorkspace,
   HERO_GREETINGS,
+  resetAgentSessionContinuity,
   type AgentSessionsChangedDetail,
 } from "../components/agent/AgentWorkspace";
 import {
@@ -47,6 +48,7 @@ const mocks = vi.hoisted(() => ({
   listAgentTasks: vi.fn(),
   downloadHermesBridgeFile: vi.fn(),
   osAccountsTopUp: vi.fn(),
+  scribeOpenVerifyPage: vi.fn(),
   providerModelSettings: vi.fn(),
   retryAgentTask: vi.fn(),
   saveAgentAssistantMessage: vi.fn(),
@@ -64,6 +66,10 @@ const mocks = vi.hoisted(() => ({
   listHermesSessions: vi.fn(),
   gatewayRequest: vi.fn(),
   gatewayEventHandlers: new Set<(event: Record<string, unknown>) => void>(),
+  gatewayInstances: [] as Array<{
+    connect: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
+  }>,
   eventHandlers: new Map<
     string,
     (event: { payload?: { paths?: string[] } }) => void
@@ -99,6 +105,7 @@ vi.mock("../lib/tauri", () => ({
   osAccountsTopUp: mocks.osAccountsTopUp,
   providerModelSettings: mocks.providerModelSettings,
   retryAgentTask: mocks.retryAgentTask,
+  scribeOpenVerifyPage: mocks.scribeOpenVerifyPage,
   saveAgentAssistantMessage: mocks.saveAgentAssistantMessage,
   saveAgentHermesSession: mocks.saveAgentHermesSession,
   sendAgentMessage: mocks.sendAgentMessage,
@@ -129,6 +136,11 @@ vi.mock("../lib/hermes-gateway", async (importOriginal) => ({
   // Real HermesGatewayError / isSessionBusyError — only the client is faked.
   ...(await importOriginal<typeof import("../lib/hermes-gateway")>()),
   HermesGatewayClient: class {
+    constructor() {
+      mocks.gatewayInstances.push(
+        this as unknown as (typeof mocks.gatewayInstances)[number],
+      );
+    }
     connect = vi.fn();
     close = vi.fn();
     onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
@@ -163,6 +175,11 @@ describe("AgentWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.gatewayEventHandlers.clear();
+    mocks.gatewayInstances.length = 0;
+    // Auto-cleanup unmounts the workspace after each test, which snapshots
+    // any still-working session for the next mount — across tests that would
+    // leak one test's mid-run session into the next.
+    resetAgentSessionContinuity();
     window.sessionStorage.clear();
     window.localStorage.clear();
     mocks.listAgentTasks.mockResolvedValue({ items: [existingTask] });
@@ -190,14 +207,25 @@ describe("AgentWorkspace", () => {
       ],
     });
     mocks.getAgentTask.mockResolvedValue(existingTask);
+    // Empty by default so badge tests assert the plain (unlinked) badge; the
+    // verify-link test overrides this with a real URL.
+    mocks.scribeOpenVerifyPage.mockResolvedValue(undefined);
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
     });
-    mocks.startHermesBridge.mockResolvedValue({
-      running: true,
-      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
-    });
+    // Mirrors the backend: starting a mode yields a status that contains
+    // that mode's connection (alongside any other live mode).
+    mocks.startHermesBridge.mockImplementation(
+      async (_cwd?: string, fullMode?: boolean) => {
+        const connection = {
+          port: 61234,
+          wsUrl: "ws://127.0.0.1:61234",
+          fullMode: Boolean(fullMode),
+        };
+        return { running: true, connection, connections: [connection] };
+      },
+    );
     mocks.listHermesSessions.mockResolvedValue([existingSession]);
     mocks.listHermesSessionMessages.mockResolvedValue([]);
     mocks.hermesBridgeFilesystemSnapshot.mockResolvedValue({ roots: [] });
@@ -433,8 +461,12 @@ describe("AgentWorkspace", () => {
     render(<AgentWorkspace initialSession={existingSession} />);
 
     expect(await screen.findByText("Anonymous mode")).toBeInTheDocument();
+    // The badge always links to the verify page now, so its accessible name
+    // carries the click-through suffix after the mode description.
     expect(
-      screen.getByLabelText(`Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`),
+      screen.getByLabelText(
+        new RegExp(`^Anonymous mode - ${ANONYMOUS_MODEL_DESCRIPTION}`),
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Private mode")).not.toBeInTheDocument();
   });
@@ -480,6 +512,20 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(screen.queryByRole("tooltip")).not.toBeInTheDocument(),
     );
+  });
+
+  it("opens the server verification page from the privacy badge", async () => {
+    // A button through Rust, not an anchor: the webview drops
+    // target="_blank" navigations.
+    mocks.scribeOpenVerifyPage.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    const badge = await screen.findByRole("button", { name: /Private mode/ });
+    expect(badge).toHaveAccessibleName(/how to verify it yourself/i);
+    await user.click(badge);
+    expect(mocks.scribeOpenVerifyPage).toHaveBeenCalledOnce();
   });
 
   it("refreshes the model privacy label when generation model settings change", async () => {
@@ -608,6 +654,45 @@ describe("AgentWorkspace", () => {
     expect(screen.queryByText("Newer session")).toBeNull();
   });
 
+  it("restores an in-flight new session across a remount (settings round trip)", async () => {
+    // Start a brand-new session whose first turn is still running: Hermes has
+    // persisted nothing yet (no messages, absent from the server session
+    // list), so every trace of the run lives in component state. Navigating
+    // to Settings and back unmounts and remounts the workspace — without the
+    // continuity snapshot the session came back as an empty "Untitled
+    // session" that nothing ever refreshed.
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now(), prompt: "audit the repo" }),
+    );
+    const first = render(<AgentWorkspace />);
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-2",
+        text: "audit the repo",
+      }),
+    );
+    expect(await screen.findByText("audit the repo")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Summarize Current Page"),
+    ).toBeInTheDocument();
+
+    first.unmount();
+    render(<AgentWorkspace />);
+
+    // The sent message and the session title survive the round trip.
+    expect(await screen.findByText("audit the repo")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Summarize Current Page"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Untitled session")).toBeNull();
+    // The run is still treated as working, so the reconcile poll can pick it
+    // up: the composer offers the stop control instead of an idle send.
+    expect(
+      await screen.findByRole("button", { name: "Stop June" }),
+    ).toBeInTheDocument();
+  });
+
   it("renames prompt-like existing session titles after messages load", async () => {
     const rawTitle = "I want you to keep this running inside my CLI";
     mocks.listHermesSessions.mockResolvedValue([
@@ -666,6 +751,13 @@ describe("AgentWorkspace", () => {
   });
 
   it("forgets the persisted session when it is deleted", async () => {
+    // The Unrestricted record must die with the session too — deletions
+    // arriving via the sidebar event included — or a future session that
+    // recycled the id would inherit full write access.
+    window.localStorage.setItem(
+      "june.agent.unrestrictedSessions",
+      JSON.stringify({ "session-1": true }),
+    );
     render(<AgentWorkspace />);
 
     expect(await screen.findByText("Existing session")).toBeInTheDocument();
@@ -688,6 +780,9 @@ describe("AgentWorkspace", () => {
         window.localStorage.getItem("scribe:agent:last-open-session"),
       ).toBeNull(),
     );
+    expect(
+      window.localStorage.getItem("june.agent.unrestrictedSessions"),
+    ).toBeNull();
   });
 
   it("keeps the blank composer after a New Session event during refresh", async () => {
@@ -2021,7 +2116,23 @@ describe("AgentWorkspace", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("shows the unrestricted badge while the runtime is unsandboxed by choice", async () => {
+  it("shows the unrestricted badge only on sessions that opted in", async () => {
+    window.localStorage.setItem(
+      "june.agent.unrestrictedSessions",
+      JSON.stringify({ "session-1": true }),
+    );
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Unrestricted")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/Unrestricted - This session runs without/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the badge off a sandboxed session even while the runtime is unsandboxed", async () => {
+    // Another session's opt-in has the unrestricted runtime up; this session
+    // never opted in, and its sends route to the sandboxed process — no badge.
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: {
@@ -2033,10 +2144,127 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    expect(await screen.findByText("Unrestricted")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText(/Unrestricted - June is running without the file/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(screen.queryByText("Unrestricted")).not.toBeInTheDocument();
+  });
+
+  it("restores the sandbox before a follow-up to a session that never opted in", async () => {
+    const user = userEvent.setup();
+    // The runtime is still unsandboxed from another session's opt-in.
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: {
+        port: 61234,
+        wsUrl: "ws://127.0.0.1:61234",
+        fullMode: true,
+      },
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Send a message"), "hello");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    // The send brings up the sandboxed process for this session — the
+    // unrestricted one (and its in-flight work) is left alone.
+    await waitFor(() =>
+      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, false),
+    );
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: "hello" }),
+      ),
+    );
+  });
+
+  it("keeps an opted-in session unrestricted across follow-ups", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "june.agent.unrestrictedSessions",
+      JSON.stringify({ "session-1": true }),
+    );
+    // The runtime has since dropped back to the sandbox (relaunch, or a
+    // sandboxed session ran in between).
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Send a message"), "continue");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true),
+    );
+  });
+
+  it("serves both modes concurrently — neither runtime is torn down", async () => {
+    const user = userEvent.setup();
+    // session-1 opted into Unrestricted; both runtime processes are up.
+    window.localStorage.setItem(
+      "june.agent.unrestrictedSessions",
+      JSON.stringify({ "session-1": true }),
+    );
+    const sandboxedConnection = {
+      port: 61234,
+      wsUrl: "ws://127.0.0.1:61234",
+      fullMode: false,
+    };
+    const unrestrictedConnection = {
+      port: 61235,
+      wsUrl: "ws://127.0.0.1:61235",
+      fullMode: true,
+    };
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: sandboxedConnection,
+      connections: [sandboxedConnection, unrestrictedConnection],
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    // Follow-up to the unrestricted session rides its own gateway.
+    await user.type(screen.getByPlaceholderText("Send a message"), "continue");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: "continue" }),
+      ),
+    );
+
+    // A fresh sandboxed session starts alongside it on the other gateway.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent(AGENT_NEW_SESSION_EVENT, {
+          detail: { prompt: "new sandboxed work" },
+        }),
+      );
+    });
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: "new sandboxed work" }),
+      ),
+    );
+
+    // Both processes were already up: no start call, one socket per mode,
+    // and crucially nothing closed the other mode's gateway mid-flight.
+    expect(mocks.startHermesBridge).not.toHaveBeenCalled();
+    const connectedUrls = mocks.gatewayInstances.flatMap((instance) =>
+      instance.connect.mock.calls.map((call) => call[0]),
+    );
+    expect(connectedUrls).toContain("ws://127.0.0.1:61235");
+    expect(connectedUrls).toContain("ws://127.0.0.1:61234");
+    for (const instance of mocks.gatewayInstances) {
+      expect(instance.close).not.toHaveBeenCalled();
+    }
   });
 
   it("explains a busy rejection and removes the ghost bubble", async () => {
@@ -2174,6 +2402,107 @@ describe("AgentWorkspace", () => {
     await waitFor(() =>
       expect(screen.queryByText("Agent error gallery")).toBeNull(),
     );
+  });
+
+  it("does not let a stale message fetch erase a newer follow-up", async () => {
+    // The selection effect, working poll, and terminal-event refresh all
+    // fetch session messages without awaiting each other. A slow fetch that
+    // started first can resolve last; applying it as a whole-list overwrite
+    // used to erase the follow-up the newer fetch had just persisted (and
+    // whose optimistic bubble was dropped at that point) — the user's
+    // message visibly vanished until a later refresh restored it.
+    const user = userEvent.setup();
+    const oldHistory = [
+      {
+        id: "m1",
+        role: "user",
+        content: "previous request",
+        timestamp: "2026-06-04T12:00:00.000Z",
+      },
+      {
+        id: "m2",
+        role: "assistant",
+        content: "previous answer",
+        timestamp: "2026-06-04T12:00:01.000Z",
+      },
+    ];
+    let resolveStale: (value: unknown) => void = () => {};
+    const stale = new Promise((resolve) => {
+      resolveStale = resolve;
+    });
+    mocks.listHermesSessionMessages
+      .mockImplementationOnce(() => stale) // the mount-selection fetch hangs
+      .mockImplementation(async () => [
+        ...oldHistory,
+        {
+          id: "m3",
+          role: "user",
+          content: "follow up while racing",
+          timestamp: new Date().toISOString(),
+        },
+        {
+          id: "m4",
+          role: "assistant",
+          content: "raced reply",
+          timestamp: new Date().toISOString(),
+        },
+      ]);
+    mocks.gatewayRequest.mockImplementation((method: string) => {
+      if (method === "session.resume") {
+        return Promise.resolve({ session_id: "runtime-session-1" });
+      }
+      return Promise.resolve({});
+    });
+    // Hold the submit just before completion so the working poll's interval
+    // is created on the fake clock (a real-clock interval can't be advanced).
+    let resolveEnsureSession: (value: unknown) => void = () => {};
+    mocks.ensureHermesBridgeSession.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveEnsureSession = resolve;
+        }),
+    );
+
+    render(<AgentWorkspace />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByRole("textbox"), "follow up while racing");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() =>
+      expect(mocks.ensureHermesBridgeSession).toHaveBeenCalled(),
+    );
+
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        resolveEnsureSession({});
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith("prompt.submit", {
+        session_id: "runtime-session-1",
+        text: "follow up while racing",
+      });
+
+      // The working poll's refresh applies the newer history (follow-up +
+      // reply persisted; the optimistic bubble is dropped against it).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(screen.getByText("raced reply")).toBeInTheDocument();
+
+      // The stale mount-time fetch finally resolves — without per-session
+      // fetch ordering this overwrote the list and the follow-up vanished.
+      await act(async () => {
+        resolveStale(oldHistory);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByText("follow up while racing")).toBeInTheDocument();
+      expect(screen.getByText("raced reply")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // Last in the suite: mounting the workspace kicks off bridge/session

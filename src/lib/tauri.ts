@@ -374,8 +374,13 @@ export type HermesBridgeConnection = {
 };
 
 export type HermesBridgeStatus = {
+  /** True when any runtime process is up. */
   running: boolean;
+  /** Primary connection (the requested mode for a start call, otherwise
+   * sandboxed-first). Mode-aware callers should use `connections`. */
   connection?: HermesBridgeConnection;
+  /** Every live runtime process — at most one per write-access mode. */
+  connections?: HermesBridgeConnection[];
   message?: string;
 };
 
@@ -601,8 +606,11 @@ export async function bootstrapApp() {
   return invoke<BootstrapResponse>("bootstrap_app");
 }
 
-export async function scribeVerifyUrl() {
-  return invoke<string>("scribe_verify_url");
+/** Opens the scribe-api /verify page (attestation, routing, retention) in
+ * the default browser. Routed through Rust because the webview drops
+ * target="_blank" anchors. */
+export async function scribeOpenVerifyPage() {
+  return invoke<void>("scribe_open_verify_page");
 }
 
 export async function createNote(folderId?: string) {
@@ -698,25 +706,29 @@ export async function listAgentTasks() {
   return invoke<AgentTaskListResponse>("list_agent_tasks");
 }
 
-export async function mascotShow() {
-  return invoke<void>("mascot_show");
+export async function agentHudShow() {
+  return invoke<void>("agent_hud_show");
 }
 
-export async function mascotHide() {
-  return invoke<void>("mascot_hide");
+export async function agentHudHide() {
+  return invoke<void>("agent_hud_hide");
 }
 
-export async function mascotSetLayout(input: {
+export async function agentHudSetLayout(input: {
   expanded: boolean;
   cardCount?: number;
   replying?: boolean;
   contextMenuOpen?: boolean;
 }) {
-  return invoke<void>("mascot_set_layout", { request: input });
+  return invoke<void>("agent_hud_set_layout", { request: input });
 }
 
-export async function mascotOpenAgent(session?: HermesSessionInfo) {
-  return invoke<void>("mascot_open_agent", { session });
+export async function agentHudFocusReply() {
+  return invoke<void>("agent_hud_focus_reply");
+}
+
+export async function agentHudOpenAgent(session?: HermesSessionInfo) {
+  return invoke<void>("agent_hud_open_agent", { session });
 }
 
 export async function createAgentTask(input: {
@@ -966,6 +978,10 @@ export async function getNote(noteId: string) {
 
 export async function deleteNote(noteId: string) {
   return invoke<void>("delete_note", { request: { noteId } });
+}
+
+export async function deleteNotes(noteIds: string[]) {
+  return invoke<void>("delete_notes", { request: { noteIds } });
 }
 
 export async function updateNote(input: {
