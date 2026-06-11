@@ -142,6 +142,11 @@ import {
 } from "../../lib/model-privacy";
 import { messageFromError } from "../../lib/errors";
 import {
+  forgetSessionMode,
+  rememberSessionMode,
+  sessionUnrestricted,
+} from "../../lib/agent-session-modes";
+import {
   buildAgentChatTurns,
   buildHermesSessionChatTurns,
   type AgentApprovalChoice,
@@ -1765,11 +1770,15 @@ export function AgentWorkspace({
     const titlePromise = targetSessionId
       ? undefined
       : agentSessionTitleForPrompt(content);
-    // Only a session being created applies the unrestricted opt-in;
-    // follow-ups on existing sessions never change the runtime's mode under
-    // them.
+    // The Unrestricted opt-in is made per session: a new session applies the
+    // picker draft, and a follow-up applies the mode its session was created
+    // with — restarting the runtime when the running mode differs. Without
+    // this, one Unrestricted session would leave the runtime unsandboxed
+    // under every other session's follow-ups.
     const gateway = await ensureHermesGateway(
-      targetSessionId ? undefined : fullModeDraftRef.current,
+      targetSessionId
+        ? sessionUnrestricted(targetSessionId)
+        : fullModeDraftRef.current,
     );
     const sessionTitle = titlePromise ? await titlePromise : undefined;
     const created = targetSessionId
@@ -1781,6 +1790,9 @@ export function AgentWorkspace({
     const storedSessionId =
       targetSessionId ?? created?.stored_session_id ?? created?.session_id;
     if (!storedSessionId) throw new Error("Hermes did not create a session.");
+    if (!targetSessionId) {
+      rememberSessionMode(storedSessionId, fullModeDraftRef.current);
+    }
     const sessionDisplayTitle =
       explicitSession?.title?.trim() ||
       explicitSession?.preview?.trim() ||
@@ -2537,6 +2549,7 @@ export function AgentWorkspace({
   async function deleteSelectedHermesSession(sessionId: string) {
     try {
       await deleteHermesSession(sessionId);
+      forgetSessionMode(sessionId);
       // Clearing the selection falls the workspace back to empty.
       removeHermesSessionLocally(sessionId, false);
     } catch (err) {
@@ -3296,7 +3309,14 @@ export function AgentWorkspace({
             setArtifactPanel((open) => (open ? null : { view: "list" }))
           }
           privacyBadge={generationPrivacyBadge}
-          fullMode={Boolean(bridge.running && bridge.connection?.fullMode)}
+          // The badge describes the selected session, not the live runtime:
+          // every send re-enforces the session's recorded mode, so a
+          // sandboxed session stays sandboxed even while an Unrestricted
+          // runtime from another session is still up. The hero composer's
+          // picker covers the new-session draft.
+          fullMode={
+            !newSessionMode && sessionUnrestricted(selectedHermesSessionId)
+          }
           title={
             !newSessionMode && selectedHermesSessionId
               ? (selectedHermesSession?.title ?? "")
@@ -3436,12 +3456,13 @@ function SafetyBadge({ privacyBadge }: { privacyBadge?: ModelPrivacyBadge }) {
   );
 }
 
-// Honest indicator of the live runtime, not of any one session: the jail is
-// per-process, so while the user has it unrestricted every session it serves
-// runs unsandboxed.
+// Indicator of the selected session's opt-in. The jail itself is
+// per-process, but every send restarts the runtime into the target session's
+// recorded mode, so the session — not the runtime's current state — is the
+// honest unit to label.
 function UnrestrictedBadge() {
   const description =
-    "June is running without the file sandbox and can change any file your account can. Start a session with Unrestricted off to restore the sandbox.";
+    "This session runs without the file sandbox — June can change any file your account can. Sessions started as Sandboxed keep their jail; it is re-applied whenever you message them.";
   return (
     <HoverTip
       tip={description}

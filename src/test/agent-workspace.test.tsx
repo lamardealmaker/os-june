@@ -1913,7 +1913,23 @@ describe("AgentWorkspace", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("shows the unrestricted badge while the runtime is unsandboxed by choice", async () => {
+  it("shows the unrestricted badge only on sessions that opted in", async () => {
+    window.localStorage.setItem(
+      "june.agent.unrestrictedSessions",
+      JSON.stringify({ "session-1": true }),
+    );
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+
+    expect(await screen.findByText("Unrestricted")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText(/Unrestricted - This session runs without/),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the badge off a sandboxed session even while the runtime is unsandboxed", async () => {
+    // Another session's opt-in left the runtime in full mode; this session
+    // never opted in, and its sends re-apply the jail — no badge.
     mocks.hermesBridgeStatus.mockResolvedValue({
       running: true,
       connection: {
@@ -1925,10 +1941,62 @@ describe("AgentWorkspace", () => {
 
     render(<AgentWorkspace initialSession={existingSession} />);
 
-    expect(await screen.findByText("Unrestricted")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText(/Unrestricted - June is running without the file/),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+    expect(screen.queryByText("Unrestricted")).not.toBeInTheDocument();
+  });
+
+  it("restores the sandbox before a follow-up to a session that never opted in", async () => {
+    const user = userEvent.setup();
+    // The runtime is still unsandboxed from another session's opt-in.
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: {
+        port: 61234,
+        wsUrl: "ws://127.0.0.1:61234",
+        fullMode: true,
+      },
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Send a message"), "hello");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    // The send restarts the runtime back into the jail before submitting.
+    await waitFor(() =>
+      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, false),
+    );
+    await waitFor(() =>
+      expect(mocks.gatewayRequest).toHaveBeenCalledWith(
+        "prompt.submit",
+        expect.objectContaining({ text: "hello" }),
+      ),
+    );
+  });
+
+  it("keeps an opted-in session unrestricted across follow-ups", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      "june.agent.unrestrictedSessions",
+      JSON.stringify({ "session-1": true }),
+    );
+    // The runtime has since dropped back to the sandbox (relaunch, or a
+    // sandboxed session ran in between).
+    mocks.hermesBridgeStatus.mockResolvedValue({
+      running: true,
+      connection: { port: 61234, wsUrl: "ws://127.0.0.1:61234" },
+    });
+
+    render(<AgentWorkspace initialSession={existingSession} />);
+    expect(await screen.findByText("Existing session")).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Send a message"), "continue");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() =>
+      expect(mocks.startHermesBridge).toHaveBeenCalledWith(undefined, true),
+    );
   });
 
   it("explains a busy rejection and removes the ghost bubble", async () => {
