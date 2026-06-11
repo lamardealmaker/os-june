@@ -5,13 +5,13 @@ use scribe_domain::{DomainError, IssueReport, IssueReportSink};
 use serde::{Deserialize, Serialize};
 
 /// Files issue reports as Issues in the os-platform tracker, tagged with the
-/// configured label (default `bug`). Attachments are uploaded first
-/// (best-effort — an unreadable upload never blocks the report; the names
-/// are listed in the body either way), then the Issue is created with
-/// `type: bug` and the label attached atomically. If the label doesn't exist
-/// in the target Project yet, the sink creates it once and retries; if even
-/// that fails, the Issue is filed without the label rather than dropping the
-/// report.
+/// configured label (default `bug`). Uses only os-platform's stock API:
+/// attachments are uploaded first (best-effort — a failed upload never
+/// blocks the report; the names are listed in the body either way), the
+/// Issue is created with `type: bug`, and the label is attached afterwards
+/// via the labels PUT — creating the label in the Project the first time.
+/// Every step after the create is best-effort: an Issue without its tag
+/// beats a lost report.
 pub struct OsPlatformIssueReportSink {
     http: reqwest::Client,
     api_url: String,
@@ -37,6 +37,8 @@ struct FellowFile {
 #[derive(Deserialize)]
 struct FellowIssue {
     external_id: String,
+    /// The labels PUT addresses the Issue by its per-Org number.
+    number_in_org: i64,
 }
 
 impl OsPlatformIssueReportSink {
@@ -110,20 +112,13 @@ impl OsPlatformIssueReportSink {
         &self,
         report: &IssueReport,
         file_ids: &[String],
-        with_label: bool,
     ) -> Result<FellowEnvelope<FellowIssue>, DomainError> {
-        let label_slugs: Vec<&str> = if with_label && !self.label.is_empty() {
-            vec![self.label.as_str()]
-        } else {
-            Vec::new()
-        };
         let body = serde_json::json!({
             "title": issue_title(&report.description),
             "body_markdown": issue_body(report),
             "reward_amount_units": "0",
             "type": "bug",
             "status": "todo",
-            "label_slugs": label_slugs,
             "file_ids": file_ids,
         });
         self.http
@@ -145,6 +140,30 @@ impl OsPlatformIssueReportSink {
                 tracing::error!(%error, "issue_reports: os-platform returned a malformed envelope");
                 DomainError::UpstreamProvider
             })
+    }
+
+    /// Attaches the configured label via the labels PUT (set-replace; a
+    /// just-created Issue has no labels to clobber). Returns the envelope
+    /// so the caller can spot the label-doesn't-exist rejection.
+    async fn put_label(&self, number_in_org: i64) -> Option<FellowEnvelope<serde_json::Value>> {
+        let body = serde_json::json!({ "label_slugs": [self.label] });
+        let response = self
+            .http
+            .put(format!(
+                "{}/v1/orgs/{}/bounties/{}/labels",
+                self.api_url, self.org, number_in_org
+            ))
+            .bearer_auth(&self.api_key)
+            .json(&body)
+            .send()
+            .await;
+        match response {
+            Ok(response) => response.json().await.ok(),
+            Err(error) => {
+                tracing::warn!(%error, "issue_reports: label request failed");
+                None
+            }
+        }
     }
 
     /// Creates the configured label in the target Project. The color is
@@ -174,6 +193,34 @@ impl OsPlatformIssueReportSink {
             }
         }
     }
+
+    /// Best-effort tagging after the Issue exists. First report into a
+    /// Project: the label won't exist yet, so the missing-label rejection
+    /// creates it and retries once. Failure here never fails the delivery —
+    /// the Issue is already filed (and carries `type: bug` regardless).
+    async fn tag_issue(&self, number_in_org: i64) {
+        if self.label.is_empty() {
+            return;
+        }
+        let attached = match self.put_label(number_in_org).await {
+            Some(envelope) if envelope.success => true,
+            Some(envelope) if envelope.message.as_deref().is_some_and(is_missing_label) => {
+                self.ensure_label().await
+                    && self
+                        .put_label(number_in_org)
+                        .await
+                        .is_some_and(|retry| retry.success)
+            }
+            _ => false,
+        };
+        if !attached {
+            tracing::warn!(
+                number_in_org,
+                label = %self.label,
+                "issue_reports: issue filed but the label could not be attached"
+            );
+        }
+    }
 }
 
 #[async_trait]
@@ -181,17 +228,7 @@ impl IssueReportSink for OsPlatformIssueReportSink {
     async fn deliver(&self, report: IssueReport) -> Result<(), DomainError> {
         let file_ids = self.upload_attachments(&report).await;
 
-        let mut envelope = self.create_issue(&report, &file_ids, true).await?;
-        if !envelope.success && envelope.message.as_deref().is_some_and(is_missing_label) {
-            // First report into this Project: the label doesn't exist yet.
-            // Create it and retry once; if the label can't be created, file
-            // the Issue without it — losing the tag beats losing the report.
-            let labeled = self.ensure_label().await;
-            envelope = self.create_issue(&report, &file_ids, labeled).await?;
-            if !envelope.success && labeled {
-                envelope = self.create_issue(&report, &file_ids, false).await?;
-            }
-        }
+        let envelope = self.create_issue(&report, &file_ids).await?;
         if !envelope.success {
             tracing::error!(
                 message = envelope.message.as_deref().unwrap_or(""),
@@ -199,11 +236,12 @@ impl IssueReportSink for OsPlatformIssueReportSink {
             );
             return Err(DomainError::UpstreamProvider);
         }
+        let issue = envelope.data.as_ref();
+        if let Some(issue) = issue {
+            self.tag_issue(issue.number_in_org).await;
+        }
         tracing::info!(
-            issue = envelope
-                .data
-                .as_ref()
-                .map_or("", |issue| issue.external_id.as_str()),
+            issue = issue.map_or("", |issue| issue.external_id.as_str()),
             user_id = %report.user_id.0,
             attachments = file_ids.len(),
             "issue_reports: report filed as an os-platform issue"
@@ -522,7 +560,14 @@ mod os_platform_tests {
 
     fn issue_created() -> ResponseTemplate {
         ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": { "external_id": "OSN-7" },
+            "data": { "external_id": "OSN-7", "number_in_org": 7 },
+            "success": true,
+        }))
+    }
+
+    fn labels_set() -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": { "external_id": "OSN-7", "number_in_org": 7 },
             "success": true,
         }))
     }
@@ -571,10 +616,18 @@ mod os_platform_tests {
                 "reward_amount_units": "0",
                 "type": "bug",
                 "status": "todo",
-                "label_slugs": ["bug"],
                 "file_ids": ["fil_1"],
             })))
             .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .and(body_partial_json(serde_json::json!({
+                "label_slugs": ["bug"],
+            })))
+            .respond_with(labels_set())
             .expect(1)
             .mount(&server)
             .await;
@@ -590,11 +643,19 @@ mod os_platform_tests {
             .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
-        // First create: label unknown. After the label is created, the retry
-        // succeeds — and the attachment-upload failure above never blocked
-        // the report (file_ids just ends up empty).
+        // The attachment-upload failure above never blocks the report —
+        // file_ids just ends up empty.
         Mock::given(method("POST"))
             .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .and(body_partial_json(serde_json::json!({ "file_ids": [] })))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        // First labels PUT: the label doesn't exist in the Project yet.
+        // After the label create, the retried PUT lands.
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/open-software/bounties/7/labels"))
             .respond_with(label_missing())
             .up_to_n_times(1)
             .mount(&server)
@@ -612,13 +673,9 @@ mod os_platform_tests {
             .expect(1)
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/bounties"))
-            .and(body_partial_json(serde_json::json!({
-                "label_slugs": ["bug"],
-                "file_ids": [],
-            })))
-            .respond_with(issue_created())
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/open-software/bounties/7/labels"))
+            .respond_with(labels_set())
             .expect(1)
             .mount(&server)
             .await;
@@ -627,7 +684,7 @@ mod os_platform_tests {
     }
 
     #[tokio::test]
-    async fn os_platform_sink_files_unlabelled_when_the_label_cannot_be_created() {
+    async fn os_platform_sink_keeps_the_issue_when_the_label_cannot_be_attached() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/files"))
@@ -636,8 +693,13 @@ mod os_platform_tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/v1/orgs/open-software/projects/june/bounties"))
+            .respond_with(issue_created())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/orgs/open-software/bounties/7/labels"))
             .respond_with(label_missing())
-            .up_to_n_times(1)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -645,14 +707,9 @@ mod os_platform_tests {
             .respond_with(ResponseTemplate::new(403))
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/orgs/open-software/projects/june/bounties"))
-            .and(body_partial_json(serde_json::json!({ "label_slugs": [] })))
-            .respond_with(issue_created())
-            .expect(1)
-            .mount(&server)
-            .await;
 
+        // The Issue exists; a permanently missing label must not fail the
+        // delivery (the report would be re-shown to the user as unsent).
         assert!(sink(&server).deliver(report()).await.is_ok());
     }
 
