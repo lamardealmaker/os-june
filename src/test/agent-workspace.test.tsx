@@ -252,6 +252,41 @@ describe("AgentWorkspace", () => {
     ).toBeNull();
   });
 
+  it("never announces the restored session as selected while a New Session is pending", async () => {
+    // Regression: "New session" from inside a project arms the pending marker
+    // and remounts the workspace. Initializing from the last-open restore used
+    // to dispatch a mount-time sessions-changed event selecting the old
+    // session, which App reads as "switched to existing work" — dropping the
+    // pending project assignment before the new session exists.
+    window.localStorage.setItem("scribe:agent:last-open-session", "session-1");
+    window.sessionStorage.setItem(
+      AGENT_NEW_SESSION_PENDING_KEY,
+      JSON.stringify({ createdAt: Date.now() }),
+    );
+    const sessionDetails: AgentSessionsChangedDetail[] = [];
+    const onSessionsChanged = (event: Event) =>
+      sessionDetails.push(
+        (event as CustomEvent<AgentSessionsChangedDetail>).detail,
+      );
+    window.addEventListener(AGENT_SESSIONS_CHANGED_EVENT, onSessionsChanged);
+
+    try {
+      render(<AgentWorkspace />);
+
+      expect(await screen.findByText(HERO_GREETING)).toBeInTheDocument();
+      await waitFor(() => expect(mocks.listHermesSessions).toHaveBeenCalled());
+      expect(sessionDetails.length).toBeGreaterThan(0);
+      expect(
+        sessionDetails.every((detail) => detail.selectedSessionId == null),
+      ).toBe(true);
+    } finally {
+      window.removeEventListener(
+        AGENT_SESSIONS_CHANGED_EVENT,
+        onSessionsChanged,
+      );
+    }
+  });
+
   it("labels anonymous-only agent models as anonymous mode", async () => {
     mocks.providerModelSettings.mockResolvedValue({
       settings: {
