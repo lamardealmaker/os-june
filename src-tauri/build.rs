@@ -24,7 +24,14 @@ fn main() {
 /// scripts/bundle-hermes-runtime.sh before compiling; everywhere else this
 /// placeholder keeps the build green and the app falls back to the managed
 /// on-device install (`bundled_hermes_command` finds no launcher in it).
+///
+/// A populated bundle carries a PIN stamp (the hermes-agent commit it was
+/// built from). When that stamp no longer matches the pin in
+/// src/hermes_bridge.rs — a developer bumped the pin after bundling — the
+/// stale bundle is evicted and replaced with the placeholder rather than
+/// silently shipping outdated runtime code.
 fn ensure_bundled_hermes_dir() {
+    println!("cargo:rerun-if-changed=../.tauri-hermes/hermes/PIN");
     let manifest_dir = std::path::PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR should be set"),
     );
@@ -35,7 +42,28 @@ fn ensure_bundled_hermes_dir() {
         return;
     };
     if hermes_dir.exists() {
-        return;
+        if !hermes_dir.join("bin").join("hermes").exists() {
+            // Placeholder (or partial) dir: nothing to validate.
+            return;
+        }
+        let stamped = std::fs::read_to_string(hermes_dir.join("PIN"))
+            .map(|raw| raw.trim().to_string())
+            .unwrap_or_default();
+        let pinned = hermes_agent_pinned_commit(&manifest_dir);
+        if !stamped.is_empty() && stamped == pinned {
+            return;
+        }
+        println!(
+            "cargo:warning=bundled Hermes runtime is stale (built from {stamped:?}, pin is \
+             {pinned:?}); evicting it — rerun scripts/bundle-hermes-runtime.sh to bundle again"
+        );
+        if let Err(error) = std::fs::remove_dir_all(&hermes_dir) {
+            println!(
+                "cargo:warning=could not remove stale hermes bundle {}: {error}",
+                hermes_dir.display()
+            );
+            return;
+        }
     }
     if let Err(error) = std::fs::create_dir_all(&hermes_dir) {
         println!(
@@ -50,6 +78,23 @@ ship the runtime inside the app.\n";
     if let Err(error) = std::fs::write(hermes_dir.join("PLACEHOLDER.md"), note) {
         println!("cargo:warning=could not write hermes placeholder: {error}");
     }
+}
+
+/// Reads HERMES_AGENT_INSTALL_COMMIT out of src/hermes_bridge.rs. A build
+/// script cannot import crate constants, so this parses the declaration the
+/// same way scripts/bundle-hermes-runtime.sh does — one source of truth.
+fn hermes_agent_pinned_commit(manifest_dir: &std::path::Path) -> String {
+    let source = std::fs::read_to_string(manifest_dir.join("src").join("hermes_bridge.rs"))
+        .unwrap_or_default();
+    source
+        .lines()
+        .find(|line| line.contains("const HERMES_AGENT_INSTALL_COMMIT"))
+        .and_then(|line| {
+            let start = line.find('"')? + 1;
+            let end = line[start..].find('"')? + start;
+            Some(line[start..end].to_string())
+        })
+        .unwrap_or_default()
 }
 
 /// Remove pre-rename ("OS Scribe") helper bundles from `.tauri-helper` so

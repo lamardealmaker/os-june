@@ -69,12 +69,18 @@ log "pin: $commit"
 work="$out_parent/work"
 rm -rf "$out" "$work"
 mkdir -p "$work"
+# No curl-pipe-sh here, deliberately: this script runs in release CI after the
+# Developer ID certificate is imported, so fetching an unpinned remote
+# installer would hand keychain-adjacent execution to whoever controls (or
+# intercepts) that URL. Homebrew installs are checksum-verified by the
+# formula, and GitHub's macOS runners ship brew.
 uv_cmd="$(command -v uv || true)"
-if [ -z "$uv_cmd" ]; then
-  log "uv not found; installing a private copy"
-  curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR="$work/uv" sh >/dev/null
-  uv_cmd="$work/uv/uv"
+if [ -z "$uv_cmd" ] && command -v brew >/dev/null; then
+  log "uv not found; installing via Homebrew (checksummed)"
+  brew install --quiet uv >/dev/null
+  uv_cmd="$(command -v uv || true)"
 fi
+[ -n "$uv_cmd" ] || die "uv is required: install it via 'brew install uv' or https://docs.astral.sh/uv/"
 log "uv: $($uv_cmd --version)"
 
 # ---- source checkout, integrity-pinned ---------------------------------------
@@ -104,8 +110,11 @@ done
 # bundle on first launch (breaking the signature, and clean Macs have no node).
 command -v npm >/dev/null || die "npm is required to prebuild the dashboard web UI"
 log "prebuilding dashboard web UI"
-(cd "$out/hermes-agent/web" && npm ci --no-audit --no-fund >/dev/null 2>&1 && npm run build >/dev/null 2>&1) \
-  || die "web UI build failed"
+web_log="$work/web-build.log"
+if ! (cd "$out/hermes-agent/web" && npm ci --no-audit --no-fund && npm run build) >"$web_log" 2>&1; then
+  tail -40 "$web_log" >&2
+  die "web UI build failed (full log: $web_log)"
+fi
 rm -rf "$out/hermes-agent/web/node_modules"
 [ -f "$out/hermes-agent/hermes_cli/web_dist/index.html" ] || die "web_dist missing after build"
 
@@ -216,6 +225,11 @@ if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
 else
   log "APPLE_SIGNING_IDENTITY not set; skipping codesign (dev bundle)"
 fi
+
+# Stamp the bundle with its source pin. build.rs compares this against the
+# pins in hermes_bridge.rs and evicts a stale bundle (built before a pin
+# bump) instead of letting it ship silently from a developer machine.
+printf '%s\n' "$commit" > "$out/PIN"
 
 # ---- self-test: prove relocatability from a moved path with a space -----------
 log "self-test: running the launcher from a relocated copy"
