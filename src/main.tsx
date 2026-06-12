@@ -35,6 +35,17 @@ if (import.meta.env.DEV) {
   void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) =>
     registerMeetingHudDemo({ local: false }),
   );
+  // __dictationHud("listening") drives the dictation pill in the same HUD
+  // window over the Tauri bus.
+  void import("./lib/dictation-hud-demo").then(({ registerDictationHudDemo }) =>
+    registerDictationHudDemo({ local: false }),
+  );
+  // __recordingHud("recording") drives the recording pill (meeting-hud window)
+  // over the Tauri bus. Note: that window only shows when Rust already has a
+  // live recording with the main window hidden — see lib/recording-hud-demo.ts.
+  void import("./lib/recording-hud-demo").then(({ registerRecordingHudDemo }) =>
+    registerRecordingHudDemo({ local: false }),
+  );
   // __emptyStates() forces every list view (Agents, Routines, Projects,
   // Notes, Dictation, sidebar) into its empty rendering for design work;
   // call again or __emptyStates(false) to reset. Real data is untouched.

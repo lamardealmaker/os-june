@@ -165,8 +165,7 @@ function setHud(state: string, status: string) {
   hud.dataset.state = state;
   statusText.textContent = status;
   if (errorText) {
-    errorText.textContent =
-      state === "silent-error" || state === "error" ? status : "";
+    errorText.textContent = state === "error" ? status : "";
   }
   if (state === "transcribing" || state === "pasting") {
     startBraille();
@@ -608,6 +607,36 @@ async function showHud() {
     pushStopBoundsToNative();
     pushDismissBoundsToNative();
   }
+  assertWindowMatchesPill();
+}
+
+// One settle pass after every show. A long-hidden webview can wake with a
+// stale frame: the show lands before its resize, parking the pill clipped
+// with bare frost poking out — and nothing later heals it, because parked
+// states (a demo-driven "listening" stream of audio levels, say) never
+// trigger another resize. The webview viewport tracks the native content
+// size, so a viewport/pill mismatch after layout settles means the frame
+// race was lost; re-issue the resize.
+const FRAME_SETTLE_DELAY_MS = 120;
+let frameSettleTimer: number | undefined;
+
+function assertWindowMatchesPill() {
+  // Standalone browser page: the viewport is the whole tab, never the pill.
+  if (!appWindow) return;
+  if (frameSettleTimer !== undefined) window.clearTimeout(frameSettleTimer);
+  frameSettleTimer = window.setTimeout(() => {
+    frameSettleTimer = undefined;
+    const state = hud?.dataset.state;
+    if (!hud || !state || state === "idle" || state === "exiting") return;
+    const gutter = state === "meeting" ? MEETING_WINDOW_GUTTER * 2 : 0;
+    const rect = hud.getBoundingClientRect();
+    const drift = Math.max(
+      Math.abs(window.innerWidth - (rect.width + gutter)),
+      Math.abs(window.innerHeight - (rect.height + gutter)),
+    );
+    // Rust rounds the frame at physical pixels; allow a point of slack.
+    if (drift > 1.5) void syncWindowToPill();
+  }, FRAME_SETTLE_DELAY_MS);
 }
 
 function hideSoon(delay = 900) {
@@ -639,7 +668,6 @@ async function handleDictationEventPayload(payload: unknown) {
       state === "transcribing" ||
       state === "pasting" ||
       state === "error" ||
-      state === "silent-error" ||
       state === "exiting"
     ) {
       return;
@@ -690,11 +718,22 @@ async function handleDictationEventPayload(payload: unknown) {
 
   if (dictationEvent.type === "error") {
     // Rust pre-classifies via payload.silent so the HUD has one source of
-    // truth for what counts as a "Nothing recorded" case.
+    // truth for what counts as a "Nothing recorded" case. When nothing was
+    // recorded there's nothing to tell the user: take the normal graceful
+    // exit (the same fade hideHud runs after a successful paste) and say
+    // nothing. Real failures fall through to the visible error treatment
+    // below: Rust's promotion logic upgrades a silent classification to a
+    // real error when speech was probably detected, so those still show.
     if (dictationEvent.payload?.silent === true) {
-      setHud("silent-error", "Nothing recorded");
-      await showHud();
-      hideSoon(900);
+      void hideHud();
+      return;
+    }
+    // Stop with nothing running (a stop racing a session that already
+    // ended, or the demo pill's stop button hitting the real helper): the
+    // desired end state — not listening — is already true, so there is
+    // nothing to tell the user. Take the quiet exit.
+    if (dictationEvent.payload?.code === "not_listening") {
+      void hideHud();
       return;
     }
     // Re-triggering dictation while the pill is already up listening: the
@@ -925,21 +964,29 @@ if (typeof document.fonts?.ready?.then === "function") {
   });
 }
 
-// Local mirrors of the Tauri listeners, same as the agent HUD page: the
-// demo driver dispatches window events when the bridge is absent.
-window.addEventListener("dictation-event", (event) => {
-  void handleDictationEventPayload((event as CustomEvent).detail);
-});
+// Local mirrors of the Tauri listeners, same as the agent HUD page:
+// only the dev-only demo drivers dispatch these window events (standalone
+// page, no bridge), so production builds skip the dead listeners.
+if (import.meta.env.DEV) {
+  window.addEventListener("dictation-event", (event) => {
+    void handleDictationEventPayload((event as CustomEvent).detail);
+  });
 
-window.addEventListener("meeting-detection-event", (event) => {
-  void handleMeetingDetectionEventPayload((event as CustomEvent).detail);
-});
+  window.addEventListener("meeting-detection-event", (event) => {
+    void handleMeetingDetectionEventPayload((event as CustomEvent).detail);
+  });
+}
 
 subscribeToOnboardingComplete(showPendingMeetingPromptAfterOnboarding);
 
-// Console driver for this page when served standalone in a browser:
-// __meetingHud("detected") etc. See lib/meeting-hud-demo.ts.
+// Console drivers for this page when served standalone in a browser:
+// __dictationHud("listening") drives the dictation pill, __meetingHud(
+// "detected") drives the meeting-detection prompt. See lib/dictation-hud-demo.ts
+// and lib/meeting-hud-demo.ts.
 if (import.meta.env.DEV) {
+  void import("./lib/dictation-hud-demo").then(({ registerDictationHudDemo }) =>
+    registerDictationHudDemo({ local: true }),
+  );
   void import("./lib/meeting-hud-demo").then(({ registerMeetingHudDemo }) =>
     registerMeetingHudDemo({ local: true }),
   );
