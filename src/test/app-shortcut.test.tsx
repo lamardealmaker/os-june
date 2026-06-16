@@ -285,6 +285,12 @@ describe("App shortcuts", () => {
     await waitFor(() =>
       expect(mocks.createNote).toHaveBeenCalledWith(undefined),
     );
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
+    );
   });
 
   it("opens settings from the native app menu event", async () => {
