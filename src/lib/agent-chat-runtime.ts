@@ -10,6 +10,8 @@ import {
   isScheduledRunPreamble,
   stripScheduledRunPreamble,
 } from "./hermes-adapter";
+import { displayedUserMessageText } from "./issue-report-prompt";
+import { displayedSkillInvocationText } from "./skill-slash-commands";
 
 export type LiveHermesEvent = HermesGatewayEvent & {
   receivedAt: string;
@@ -897,7 +899,19 @@ function displayContentForHermesMessage(message: HermesSessionMessage) {
   if (message.role !== "user") return content.trim();
   // Scheduled runs lead with the cron delivery preamble; show the routine's
   // own instructions, not the machine scaffolding.
-  return stripScheduledRunPreamble(stripHermesContextMarkers(content));
+  return displayedUserPromptText(
+    stripScheduledRunPreamble(stripHermesContextMarkers(content)),
+  );
+}
+
+function displayedUserPromptText(content: string) {
+  let text = content;
+  for (let index = 0; index < 3; index += 1) {
+    const next = displayedUserMessageText(displayedSkillInvocationText(text));
+    if (next === text) return text;
+    text = next;
+  }
+  return text;
 }
 
 function isScheduledRunMessage(message: HermesSessionMessage) {

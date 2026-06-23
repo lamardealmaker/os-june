@@ -76,6 +76,7 @@ import {
   dictationHelperCommand,
   explainAgentApproval,
   getAgentTask,
+  getHermesBridgeSkill,
   ensureHermesBridgeSession,
   hermesBridgeFilesystemSnapshot,
   hermesBridgeMessagingPlatforms,
@@ -170,6 +171,17 @@ import {
   categoryPrompt,
   displayedUserMessageText,
 } from "../../lib/issue-report-prompt";
+import {
+  displayedSkillInvocationText,
+  explicitSkillInvocationPrompt,
+  isPathLikeSlashToken,
+  parseSkillSlashCommands,
+  parseSkillSlashCommandTokens,
+  resolveSkillSlashCommands,
+  skillDocumentLookupName,
+  type SkillSlashResolution,
+  skillSlashResolutionError,
+} from "../../lib/skill-slash-commands";
 import {
   ComposerEditor,
   type ComposerEditorHandle,
@@ -681,6 +693,13 @@ type AgentAttachment = ImportedHermesFile & {
   id: string;
 };
 
+type PreparedComposerSubmission = {
+  displayContent: string;
+  runtimeContent: string;
+  titleContent: string;
+  typedMessage: string;
+};
+
 type ComposerDraftSnapshot = {
   text: string;
   category: ReportCategory | null;
@@ -835,8 +854,6 @@ export function AgentWorkspace({
   const categoryRef = useRef<ReportCategory | null>(null);
   const [attachments, setAttachments] = useState<AgentAttachment[]>([]);
   const attachmentsRef = useRef<AgentAttachment[]>([]);
-  categoryRef.current = category;
-  attachmentsRef.current = attachments;
   const [dropActive, setDropActive] = useState(false);
   const [importingFiles, setImportingFiles] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -978,6 +995,7 @@ export function AgentWorkspace({
     ReadonlySet<string>
   >(new Set());
   const [skills, setSkills] = useState<HermesSkillInfo[] | null>(null);
+  const skillCommandsLoadRef = useRef<Promise<HermesSkillInfo[]> | null>(null);
   const [toolsets, setToolsets] = useState<HermesToolsetInfo[] | null>(null);
   const [messagingPlatforms, setMessagingPlatforms] = useState<
     HermesMessagingPlatformInfo[] | null
@@ -1004,6 +1022,7 @@ export function AgentWorkspace({
   // → About → Verify server); the privacy badge links to it when known.
   const [capabilityQuery, setCapabilityQuery] = useState("");
   const [capabilityLoading, setCapabilityLoading] = useState(false);
+  const [skillCommandLoading, setSkillCommandLoading] = useState(false);
   const [capabilitySaving, setCapabilitySaving] = useState<string | null>(null);
   const [selectedMessagingPlatformId, setSelectedMessagingPlatformId] =
     useState<string>();
@@ -1900,6 +1919,14 @@ export function AgentWorkspace({
   }, [bridge.running, workingSessionIds]);
 
   useEffect(() => {
+    categoryRef.current = category;
+  }, [category]);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  useEffect(() => {
     let disposed = false;
     const unlisteners: Array<() => void> = [];
     const installListener = async (eventName: string) => {
@@ -1962,6 +1989,87 @@ export function AgentWorkspace({
     setBusyNotice(null);
   }, [busyNotice, selectedHermesSessionId, workingSessionIds]);
 
+  async function prepareComposerSubmission(
+    message: string,
+    messageAttachments: AgentAttachment[],
+  ): Promise<PreparedComposerSubmission> {
+    const parsed = parseSkillSlashCommands(message);
+    const commandTokens = commandTokensForResolutions(
+      parsed.commandNames,
+      parseSkillSlashCommandTokens(message),
+    );
+    if (!parsed.commandNames.length) {
+      const content = promptWithAttachments(message, messageAttachments);
+      return {
+        displayContent: content,
+        runtimeContent: content,
+        titleContent: message,
+        typedMessage: message,
+      };
+    }
+
+    const availableSkills = await loadSkillCommands();
+    const resolutions = resolveSkillSlashCommands(
+      parsed.commandNames,
+      availableSkills,
+    );
+    const pathLikePromptIndex = resolutions.findIndex(
+      (resolution, index) =>
+        resolution.status !== "resolved" &&
+        isPathLikeSlashToken(commandTokens[index]?.name ?? ""),
+    );
+    if (pathLikePromptIndex === 0) {
+      const content = promptWithAttachments(message, messageAttachments);
+      return {
+        displayContent: content,
+        runtimeContent: content,
+        titleContent: message,
+        typedMessage: message,
+      };
+    }
+
+    const skillResolutions =
+      pathLikePromptIndex === -1
+        ? resolutions
+        : resolutions.slice(0, pathLikePromptIndex);
+    const problem = skillResolutions.find(
+      (resolution) => resolution.status !== "resolved",
+    );
+    if (problem) {
+      throw new Error(
+        skillSlashResolutionError(problem) ?? "Skill command failed.",
+      );
+    }
+
+    const typedMessage =
+      pathLikePromptIndex === -1
+        ? parsed.prompt.trim()
+        : message.slice(commandTokens[pathLikePromptIndex].from).trimStart();
+    if (!typedMessage && !messageAttachments.length) {
+      throw new Error("Add a request after the skill command.");
+    }
+
+    const resolved = skillResolutions.filter(isResolvedSkillSlashResolution);
+    const documents = await Promise.all(
+      resolved.map(async (resolution) => ({
+        ...(await getHermesBridgeSkill(
+          skillDocumentLookupName(resolution.skill.name),
+        )),
+        name: resolution.skill.name,
+      })),
+    );
+    const displayContent = promptWithAttachments(
+      typedMessage,
+      messageAttachments,
+    );
+    return {
+      displayContent,
+      runtimeContent: explicitSkillInvocationPrompt(documents, displayContent),
+      titleContent: typedMessage,
+      typedMessage,
+    };
+  }
+
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     const message = draft.trim();
@@ -1971,7 +2079,6 @@ export function AgentWorkspace({
     // frame it for the team and queue the delivery. Captured before the
     // composer clears so a failed send can restore the chip on retry.
     const reportCategory = category;
-    const content = promptWithAttachments(message, attachments);
     const submittedDraftKey = composerDraftKeyRef.current;
     // A typed hero submit plays the same teardown as a run shortcut: greeting
     // up, suggestions down during the session-create latency. Without it they
@@ -1979,35 +2086,54 @@ export function AgentWorkspace({
     // conversation takes over.
     if (heroMode) setHeroLeaving(true);
     setSubmitting(true);
-    composerEditorRef.current?.clear();
-    setDraft("");
-    draftRef.current = "";
-    setCategory(null);
-    categoryRef.current = null;
-    forgetComposerDraft(submittedDraftKey);
-    setComposerAttachments([]);
-    setIssueReportNotice(null);
+    let clearedDraft = false;
+    let clearedAttachments = false;
     try {
+      const prepared = await prepareComposerSubmission(message, attachments);
+      if (
+        draftRef.current.trim() === message &&
+        categoryRef.current === reportCategory
+      ) {
+        composerEditorRef.current?.clear();
+        setDraft("");
+        setCategory(null);
+        draftRef.current = "";
+        categoryRef.current = null;
+        forgetComposerDraft(submittedDraftKey);
+        clearedDraft = true;
+      }
+      if (sameAgentAttachments(attachmentsRef.current, attachments)) {
+        setComposerAttachments([]);
+        clearedAttachments = true;
+      }
+      setIssueReportNotice(null);
       await submitHermesSession(
-        reportCategory ? categoryPrompt(reportCategory, content) : content,
-        undefined,
         reportCategory
-          ? {
-              issueReport: {
-                category: reportCategory,
-                // An attachments-only send has no typed text, but the server
-                // requires a description; the report must not bounce there.
-                description:
-                  message || "No description was typed; see the attachments.",
-                attachmentNames: attachments.map(
-                  (attachment) => attachment.name,
-                ),
-                attachmentPaths: attachments.map(
-                  (attachment) => attachment.path,
-                ),
-              },
-            }
-          : undefined,
+          ? categoryPrompt(reportCategory, prepared.runtimeContent)
+          : prepared.runtimeContent,
+        undefined,
+        {
+          displayContent: prepared.displayContent,
+          titleContent: prepared.titleContent,
+          ...(reportCategory
+            ? {
+                issueReport: {
+                  category: reportCategory,
+                  // An attachments-only send has no typed text, but the server
+                  // requires a description; the report must not bounce there.
+                  description:
+                    prepared.typedMessage ||
+                    "No description was typed; see the attachments.",
+                  attachmentNames: attachments.map(
+                    (attachment) => attachment.name,
+                  ),
+                  attachmentPaths: attachments.map(
+                    (attachment) => attachment.path,
+                  ),
+                },
+              }
+            : {}),
+        },
       );
       setError(null);
       setBusyNotice(null);
@@ -2015,7 +2141,7 @@ export function AgentWorkspace({
       // Restore the composer so a failed send doesn't eat the message, its
       // category chip, or its attachments — but only where the user hasn't
       // typed or attached something new during the in-flight send.
-      if (composerEditorRef.current?.isEmpty() ?? true) {
+      if (clearedDraft && (composerEditorRef.current?.isEmpty() ?? true)) {
         composerEditorRef.current?.setContent(message, reportCategory);
         rememberComposerDraft(
           submittedDraftKey,
@@ -2024,9 +2150,11 @@ export function AgentWorkspace({
           attachments,
         );
       }
-      setComposerAttachments((current) =>
-        current.length ? current : attachments,
-      );
+      if (clearedAttachments) {
+        setComposerAttachments((current) =>
+          current.length ? current : attachments,
+        );
+      }
       if (isSessionBusyError(err)) {
         // A busy rejection is proof the gateway is healthy — retire any stale
         // connection banner along with showing the notice.
@@ -2230,8 +2358,14 @@ export function AgentWorkspace({
   async function submitHermesSession(
     content: string,
     explicitSession?: HermesSessionInfo,
-    options?: { issueReport?: PendingIssueReport },
+    options?: {
+      issueReport?: PendingIssueReport;
+      displayContent?: string;
+      titleContent?: string;
+    },
   ) {
+    const displayContent = options?.displayContent ?? content;
+    const titleContent = options?.titleContent ?? displayContent;
     const targetSessionId = explicitSession?.id
       ? explicitSession.id
       : newSessionModeRef.current
@@ -2242,7 +2376,7 @@ export function AgentWorkspace({
     const titlePromise =
       targetSessionId || options?.issueReport
         ? undefined
-        : agentSessionTitleForPrompt(content);
+        : agentSessionTitleForPrompt(titleContent);
     // The Unrestricted opt-in is made per session: a new session applies the
     // picker draft, and a follow-up routes to the runtime process matching
     // the mode its session was created with. Without this, one Unrestricted
@@ -2259,7 +2393,7 @@ export function AgentWorkspace({
       : await gateway.request<HermesRuntimeSessionResponse>("session.create", {
           title: options?.issueReport
             ? "Issue report"
-            : (sessionTitle ?? titleFromPrompt(content)),
+            : (sessionTitle ?? titleFromPrompt(titleContent)),
           cols: 96,
         });
     const storedSessionId =
@@ -2276,7 +2410,7 @@ export function AgentWorkspace({
       : explicitSession?.title?.trim() ||
         explicitSession?.preview?.trim() ||
         sessionTitle ||
-        titleFromPrompt(content);
+        titleFromPrompt(titleContent);
     if (sessionTitle) {
       sessionTitleOverridesRef.current = {
         ...sessionTitleOverridesRef.current,
@@ -2327,7 +2461,7 @@ export function AgentWorkspace({
         {
           id: storedSessionId,
           title: sessionDisplayTitle,
-          preview: content,
+          preview: displayContent,
           started_at: createdAt,
           last_active: createdAt,
           message_count: 1,
@@ -2338,7 +2472,7 @@ export function AgentWorkspace({
     const pendingUserMessage: HermesSessionMessage = {
       id: `pending:user:${Date.now()}`,
       role: "user",
-      content,
+      content: displayContent,
       timestamp: createdAt,
     };
     setPendingHermesMessages((current) => {
@@ -2357,7 +2491,7 @@ export function AgentWorkspace({
     dispatchAgentSessionStatus({
       sessionId: storedSessionId,
       title: sessionDisplayTitle,
-      prompt: content,
+      prompt: displayContent,
       status: "running",
       summary: "June is working.",
     });
@@ -3104,6 +3238,37 @@ export function AgentWorkspace({
     }
   }
 
+  async function loadSkillCommands(options?: { silent?: boolean }) {
+    if (skills) return skills;
+    let loadPromise = skillCommandsLoadRef.current;
+    if (!loadPromise) {
+      setSkillCommandLoading(true);
+      loadPromise = (async () => {
+        await ensureHermesGateway();
+        const nextSkills = await hermesBridgeSkills();
+        setSkills(nextSkills);
+        return nextSkills;
+      })();
+      skillCommandsLoadRef.current = loadPromise;
+    }
+
+    try {
+      return await loadPromise;
+    } catch (err) {
+      if (!options?.silent) {
+        throw new Error(
+          `Skill commands are unavailable. ${messageFromError(err)}`,
+        );
+      }
+      return [];
+    } finally {
+      if (skillCommandsLoadRef.current === loadPromise) {
+        skillCommandsLoadRef.current = null;
+        setSkillCommandLoading(false);
+      }
+    }
+  }
+
   async function loadCapabilities() {
     setCapabilityLoading(true);
     try {
@@ -3681,6 +3846,7 @@ export function AgentWorkspace({
           ) : null}
           <ComposerEditor
             ref={composerEditorRef}
+            skills={skills}
             placeholder={
               importingFiles
                 ? "Attaching file…"
@@ -3693,6 +3859,13 @@ export function AgentWorkspace({
               categoryRef.current = nextCategory;
               setDraft(text);
               setCategory(nextCategory);
+              if (
+                !skills &&
+                !skillCommandLoading &&
+                text.trimStart().startsWith("/")
+              ) {
+                void loadSkillCommands({ silent: true });
+              }
               rememberComposerDraft(
                 composerDraftKeyRef.current,
                 text,
@@ -6195,7 +6368,7 @@ function AgentChatTurnRow({
               key={`${turn.id}:text:${index}`}
               // Issue-report sessions open with the wrapped investigation
               // prompt; the transcript shows only what the user typed.
-              markdown={displayedUserMessageText(part.text)}
+              markdown={displayedComposerUserMessageText(part.text)}
             />
           ))}
         </div>
@@ -8054,7 +8227,52 @@ function visibleHermesMessageText(message: HermesSessionMessage) {
     textFromHermesValue(message.content) ??
     textFromHermesValue(message.text) ??
     "";
-  return stripHermesVisibleContext(text);
+  return displayedComposerUserMessageText(stripHermesVisibleContext(text));
+}
+
+function isResolvedSkillSlashResolution(
+  resolution: SkillSlashResolution,
+): resolution is Extract<SkillSlashResolution, { status: "resolved" }> {
+  return resolution.status === "resolved";
+}
+
+function sameAgentAttachments(
+  left: AgentAttachment[],
+  right: AgentAttachment[],
+) {
+  return (
+    left.length === right.length &&
+    left.every((attachment, index) => attachment.id === right[index]?.id)
+  );
+}
+
+function commandTokensForResolutions(
+  commandNames: string[],
+  tokens: Array<{ name: string; from: number; to: number }>,
+) {
+  return commandNames
+    .map((name) =>
+      tokens.find(
+        (token) => slashCommandKey(token.name) === slashCommandKey(name),
+      ),
+    )
+    .filter((token): token is { name: string; from: number; to: number } =>
+      Boolean(token),
+    );
+}
+
+function slashCommandKey(name: string) {
+  return name.trim().toLowerCase();
+}
+
+function displayedComposerUserMessageText(content: string): string {
+  let text = content;
+  for (let index = 0; index < 3; index += 1) {
+    const next = displayedUserMessageText(displayedSkillInvocationText(text));
+    if (next === text) return text;
+    text = next;
+  }
+  return text;
 }
 
 function textFromHermesValue(value: unknown): string | undefined {
