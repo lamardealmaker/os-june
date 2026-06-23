@@ -7610,14 +7610,20 @@ function promptWithAttachments(
   return [
     message || "Use the attached file(s).",
     "",
-    "Attached files copied into the Scribe Hermes workspace:",
+    "Attached files copied into the June workspace:",
     ...attachments.map(
       (attachment) =>
-        `- ${attachment.name} (${attachment.rootLabel}): ${attachment.path}`,
+        `- ${attachment.name} (${attachment.rootLabel}): ${attachmentPromptPath(attachment.path)}`,
     ),
     "",
-    "Use these workspace paths when inspecting or operating on the files.",
+    "Use these file paths when inspecting or operating on the files.",
   ].join("\n");
+}
+
+function attachmentPromptPath(path: string) {
+  const workspaceMatch = path.match(/(?:^|[/\\])workspace[/\\](.+)$/);
+  if (workspaceMatch?.[1]) return workspaceMatch[1];
+  return path;
 }
 
 function filesystemEntriesToArtifacts(
