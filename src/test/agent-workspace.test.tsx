@@ -505,6 +505,13 @@ describe("AgentWorkspace", () => {
     expect(submitted.text).toContain(
       "The recorder crashes after long meetings",
     );
+    expect(submitted.text).toContain(
+      "Attached files copied into the June workspace:",
+    );
+    expect(submitted.text).toContain(
+      "Use these file paths when inspecting or operating on the files.",
+    );
+    expect(submitted.text).not.toContain("Scribe Hermes");
     // The transcript shows the user's words only — the investigation
     // framing is plumbing between June and the runtime, never UI.
     expect(
