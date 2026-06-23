@@ -2157,7 +2157,7 @@ describe("AgentWorkspace", () => {
           "Summarize this.",
           "",
           "Attached files copied into the June workspace:",
-          `- june-context.md (Workspace): ${attachedPath}`,
+          "- june-context.md (Workspace): june-context.md",
           "",
           "Use these file paths when inspecting or operating on the files.",
         ].join("\n"),
