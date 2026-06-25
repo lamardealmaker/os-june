@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app/App";
 import { HERO_GREETINGS } from "../components/agent/AgentWorkspace";
 import { AGENT_NEW_SESSION_EVENT } from "../lib/agent-events";
-import { OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
+import { CLOSE_TAB_EVENT, OPEN_SETTINGS_EVENT } from "../lib/menu-bar";
 import type { AccountStatus, BootstrapResponse, NoteDto } from "../lib/tauri";
 
 // The hero greeting cycles per visit, so tests match any entry in the pool.
@@ -292,6 +292,75 @@ describe("App shortcuts", () => {
         "true",
       ),
     );
+  });
+
+  it("closes the active tab with Command-W", async () => {
+    render(<App />);
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
+    );
+
+    fireEvent.keyDown(window, { key: "w", metaKey: true });
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("tab", { name: "New note" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+  });
+
+  it("closes the active tab from the native close-tab menu event", async () => {
+    render(<App />);
+    const closeTabListenerCount = () =>
+      mocks.listen.mock.calls.filter(([event]) => event === CLOSE_TAB_EVENT)
+        .length;
+
+    await waitFor(() => expect(mocks.getNote).toHaveBeenCalledWith("note-1"));
+    await waitFor(() =>
+      expect(mocks.listeners.has(CLOSE_TAB_EVENT)).toBe(true),
+    );
+    expect(closeTabListenerCount()).toBe(1);
+    fireEvent.keyDown(window, { key: "n", metaKey: true, shiftKey: true });
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+        "data-active",
+        "true",
+      ),
+    );
+    expect(closeTabListenerCount()).toBe(1);
+
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    mocks.listeners.get(CLOSE_TAB_EVENT)?.({});
+    expect(screen.getByRole("tab", { name: "New note" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    dialog.remove();
+
+    mocks.listeners.get(CLOSE_TAB_EVENT)?.({});
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("tab", { name: "New note" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("tab", { name: "New session" })).toHaveAttribute(
+      "data-active",
+      "true",
+    );
+    expect(closeTabListenerCount()).toBe(1);
   });
 
   it("opens settings from the native app menu event", async () => {

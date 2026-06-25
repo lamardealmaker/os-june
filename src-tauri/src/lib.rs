@@ -22,6 +22,9 @@ use tauri::{Emitter, Manager};
 
 const CHECK_FOR_UPDATES_MENU_ID: &str = "check_for_updates";
 const CHECK_FOR_UPDATES_EVENT: &str = "scribe://check-for-updates";
+const CLOSE_TAB_MENU_ID: &str = "close_tab";
+const CLOSE_TAB_EVENT: &str = "scribe://close-tab";
+const CLOSE_WINDOW_MENU_ID: &str = "close_window_main";
 const OPEN_SETTINGS_MENU_ID: &str = "open_settings";
 const OPEN_SETTINGS_EVENT: &str = "scribe://open-settings";
 
@@ -111,6 +114,14 @@ pub fn run() {
         .on_menu_event(|app, event| {
             if event.id().as_ref() == CHECK_FOR_UPDATES_MENU_ID {
                 let _ = app.emit(CHECK_FOR_UPDATES_EVENT, ());
+                return;
+            }
+            if event.id().as_ref() == CLOSE_TAB_MENU_ID {
+                emit_close_tab_if_main_window_focused(app);
+                return;
+            }
+            if event.id().as_ref() == CLOSE_WINDOW_MENU_ID {
+                close_main_window(app);
                 return;
             }
             if event.id().as_ref() == OPEN_SETTINGS_MENU_ID {
@@ -279,7 +290,7 @@ fn single_instance_enabled_for_build(debug_assertions: bool, force_dev: bool) ->
 
 #[cfg(all(test, desktop))]
 mod tests {
-    use super::single_instance_enabled_for_build;
+    use super::{should_emit_close_tab_event, single_instance_enabled_for_build};
 
     #[test]
     fn single_instance_is_disabled_for_dev_builds_by_default() {
@@ -294,6 +305,13 @@ mod tests {
     #[test]
     fn single_instance_remains_enabled_for_release_builds() {
         assert!(single_instance_enabled_for_build(false, false));
+    }
+
+    #[test]
+    fn close_tab_menu_emits_only_when_main_window_focus_is_known_true() {
+        assert!(should_emit_close_tab_event(Some(true)));
+        assert!(!should_emit_close_tab_event(Some(false)));
+        assert!(!should_emit_close_tab_event(None));
     }
 }
 
@@ -354,7 +372,22 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         handle,
         "File",
         true,
-        &[&PredefinedMenuItem::close_window(handle, None)?],
+        &[
+            &MenuItem::with_id(
+                handle,
+                CLOSE_TAB_MENU_ID,
+                "Close tab",
+                true,
+                Some("CmdOrCtrl+W"),
+            )?,
+            &MenuItem::with_id(
+                handle,
+                CLOSE_WINDOW_MENU_ID,
+                "Close window",
+                true,
+                Some("CmdOrCtrl+Shift+W"),
+            )?,
+        ],
     )?;
     let edit_menu = Submenu::with_items(
         handle,
@@ -384,8 +417,6 @@ fn setup_app_menu(app: &tauri::App) -> tauri::Result<()> {
         &[
             &PredefinedMenuItem::minimize(handle, None)?,
             &PredefinedMenuItem::maximize(handle, None)?,
-            &PredefinedMenuItem::separator(handle)?,
-            &PredefinedMenuItem::close_window(handle, None)?,
         ],
     )?;
     let help_menu = Submenu::with_id_and_items(handle, HELP_SUBMENU_ID, "Help", true, &[])?;
@@ -436,6 +467,30 @@ fn focus_main_window(app: tauri::AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+}
+
+fn close_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "macos")]
+        let _ = window.hide();
+        #[cfg(not(target_os = "macos"))]
+        let _ = window.close();
+    }
+}
+
+fn emit_close_tab_if_main_window_focused(app: &tauri::AppHandle) {
+    if should_emit_close_tab_event(main_window_focus_state(app)) {
+        let _ = app.emit_to("main", CLOSE_TAB_EVENT, ());
+    }
+}
+
+fn main_window_focus_state(app: &tauri::AppHandle) -> Option<bool> {
+    app.get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+}
+
+fn should_emit_close_tab_event(main_window_focused: Option<bool>) -> bool {
+    main_window_focused == Some(true)
 }
 
 #[tauri::command]
