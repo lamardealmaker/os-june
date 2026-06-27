@@ -236,6 +236,22 @@ describe("OnboardingFlow", () => {
     await screen.findByPlaceholderText(/Tell June what to do/i);
   }
 
+  it("enables practice completion for a one-character reply", async () => {
+    const user = userEvent.setup();
+    await renderFlow();
+    await walkToPractice(user);
+
+    const startButton = screen.getByRole("button", {
+      name: "Start using June",
+    });
+    expect(startButton).toBeDisabled();
+
+    await user.type(screen.getByPlaceholderText(/Tell June what to do/i), "h");
+
+    await screen.findByRole("status", { name: "Dictation is working" });
+    expect(startButton).toBeEnabled();
+  });
+
   it("normalizes the factory-default shortcut to fn", async () => {
     // A fresh install still carries the Rust-side Ctrl+Opt+D default; only
     // then does onboarding write the bare-fn product default.
