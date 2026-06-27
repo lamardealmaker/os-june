@@ -231,6 +231,8 @@ fn is_public_ipv6(addr: Ipv6Addr) -> bool {
     if (first & 0xfe00) == 0xfc00
         || (first & 0xffc0) == 0xfe80
         || is_ietf_protocol_assignment_ipv6(segments)
+        || is_documentation_ipv6(segments)
+        || is_srv6_sid_ipv6(segments)
         || is_discard_only_ipv6(segments)
         || is_benchmarking_ipv6(segments)
     {
@@ -259,6 +261,14 @@ fn is_6to4_ipv6(segments: [u16; 8]) -> bool {
 
 fn is_ietf_protocol_assignment_ipv6(segments: [u16; 8]) -> bool {
     segments[0] == 0x2001 && (segments[1] & 0xfe00) == 0
+}
+
+fn is_documentation_ipv6(segments: [u16; 8]) -> bool {
+    segments[0] == 0x3fff && (segments[1] & 0xf000) == 0
+}
+
+fn is_srv6_sid_ipv6(segments: [u16; 8]) -> bool {
+    segments[0] == 0x5f00
 }
 
 fn ipv4_from_segments(high: u16, low: u16) -> Ipv4Addr {
@@ -396,6 +406,9 @@ mod tests {
             "http://[2001:20::1]/",
             "http://[2001:2f::1]/",
             "http://[2001:db8::1]/",
+            "http://[3fff::1]/",
+            "http://[3fff:0fff::1]/",
+            "http://[5f00::1]/",
             "http://[64:ff9b::a9fe:a9fe]/",
             "http://[64:ff9b::10.0.0.1]/",
             "http://[64:ff9b:1::a9fe:a9fe]/",
