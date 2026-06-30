@@ -10,6 +10,9 @@ import {
 } from "../../lib/tauri";
 import type { AccountStatus } from "../../lib/tauri";
 
+const FREE_PLAN_NAME = "Free";
+const FREE_PLAN_CREDITS = 5000;
+
 type Props = {
   account: AccountStatus;
   loading: boolean;
@@ -190,6 +193,12 @@ export function BillingSettingsSection({
 
   const subscription = account.subscription;
   const liveSubscription = hasLiveSubscription(account);
+  const usagePlanName =
+    subscription?.subscribed === true ? "your subscription" : FREE_PLAN_NAME;
+  const usageRemainingPercent = usagePercentFromBalance(
+    account.balance,
+    subscription,
+  );
   const billingRecovery =
     subscription?.subscribed === true &&
     typeof subscription.status === "string" &&
@@ -233,7 +242,7 @@ export function BillingSettingsSection({
         Billing
       </h2>
       <p className="settings-group-description">
-        Manage credits and subscription details in OpenSoftware.
+        Manage usage and subscription details in OpenSoftware.
       </p>
       {billingStatus ? (
         <p className="settings-status">{billingStatus}</p>
@@ -259,19 +268,38 @@ export function BillingSettingsSection({
               </div>
             </div>
           ) : null}
-          <div className="settings-row">
+          <div className="settings-row billing-usage-row">
             <div className="settings-row-info">
-              <p className="balance-amount">
-                {formatUsd(account.balance?.usdMillis)}
+              <p className="usage-remaining-amount">
+                {formatPercent(usageRemainingPercent)} remaining
               </p>
-              <p className="settings-row-description">Available balance</p>
+              <div
+                className="usage-remaining-progress"
+                role="progressbar"
+                aria-label="Usage remaining"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={usageRemainingPercent}
+              >
+                <div
+                  className="usage-remaining-progress-fill"
+                  style={{
+                    transform: `scaleX(${usageRemainingPercent / 100})`,
+                  }}
+                />
+              </div>
+              <div>
+                <p className="settings-row-description">
+                  Usage remaining on {usagePlanName}
+                </p>
+              </div>
             </div>
             <div className="settings-row-control">
               <button
                 type="button"
                 className="icon-button"
-                aria-label="Refresh balance"
-                title="Refresh balance"
+                aria-label="Refresh usage"
+                title="Refresh usage"
                 disabled={refreshing || !account.signedIn}
                 onClick={() => void handleRefresh()}
               >
@@ -305,8 +333,41 @@ function displayName(account: AccountStatus) {
   );
 }
 
-function formatUsd(usdMillis?: number) {
-  return `$${((usdMillis ?? 0) / 1000).toFixed(2)}`;
+function formatPercent(percent: number) {
+  return `${clampPercent(percent)}%`;
+}
+
+function clampPercent(percent: number) {
+  if (!Number.isFinite(percent)) return 0;
+  return Math.max(0, Math.min(100, Math.round(percent)));
+}
+
+function usagePercentFromBalance(
+  balance: AccountStatus["balance"],
+  subscription: AccountStatus["subscription"],
+) {
+  if (Number.isFinite(balance?.usageRemainingPercent)) {
+    return clampPercent(balance?.usageRemainingPercent ?? 0);
+  }
+  if (
+    Number.isFinite(balance?.credits) &&
+    Number.isFinite(subscription?.planCredits) &&
+    (subscription?.planCredits ?? 0) > 0
+  ) {
+    return clampPercent(
+      ((balance?.credits ?? 0) / (subscription?.planCredits ?? 1)) * 100,
+    );
+  }
+  if (
+    subscription?.subscribed === false &&
+    Number.isFinite(balance?.credits)
+  ) {
+    return clampPercent(((balance?.credits ?? 0) / FREE_PLAN_CREDITS) * 100);
+  }
+  if (Number.isFinite(balance?.usdMillis)) {
+    return (balance?.usdMillis ?? 0) > 0 ? 100 : 0;
+  }
+  return 0;
 }
 
 /** "Ends June 24" from an accounts-API timestamp, or undefined when the

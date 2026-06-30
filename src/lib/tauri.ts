@@ -1232,12 +1232,18 @@ export type AccountBalance = {
   /** Present whenever the backend snapshot succeeds; optional so older
    * payload shapes (and test fixtures) without it don't lock the app. */
   credits?: number;
+  /** Normalized usage remaining for the current plan or free allowance.
+   * Optional while the app can still receive older accounts API payloads. */
+  usageRemainingPercent?: number;
   usdMillis: number;
 };
 
 export type AccountSubscription = {
   subscribed: boolean;
   status?: "trialing" | "active" | "past_due" | "canceled" | (string & {});
+  /** Monthly plan credits returned by OS Accounts. Used as a fallback for
+   * deployments whose balance endpoint does not expose usageRemainingPercent. */
+  planCredits?: number;
   trialEnd?: string;
   currentPeriodEnd?: string;
   /** Trial length from the Stripe price config, available pre-subscription.

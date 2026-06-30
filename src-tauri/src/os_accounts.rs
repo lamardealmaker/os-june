@@ -89,6 +89,8 @@ struct MeWire {
 struct BalanceWire {
     credits: i64,
     usd_millis: i64,
+    #[serde(default)]
+    usage_remaining_percent: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -100,6 +102,7 @@ struct CheckoutSessionWire {
 struct SubscriptionWire {
     subscribed: bool,
     status: Option<String>,
+    plan_credits: Option<i64>,
     trial_end: Option<String>,
     current_period_end: Option<String>,
     /// Trial length from the Stripe price config, available pre-subscription.
@@ -151,6 +154,8 @@ pub struct AccountUser {
 pub struct AccountBalance {
     pub credits: i64,
     pub usd_millis: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_remaining_percent: Option<i64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -159,6 +164,8 @@ pub struct AccountSubscription {
     pub subscribed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_credits: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trial_end: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -223,6 +230,7 @@ impl From<BalanceWire> for AccountBalance {
         Self {
             credits: w.credits,
             usd_millis: w.usd_millis,
+            usage_remaining_percent: w.usage_remaining_percent,
         }
     }
 }
@@ -353,10 +361,12 @@ fn local_dev_account_status() -> AccountStatus {
         balance: Some(AccountBalance {
             credits: 0,
             usd_millis: 0,
+            usage_remaining_percent: Some(100),
         }),
         subscription: Some(AccountSubscription {
             subscribed: true,
             status: Some("active".to_string()),
+            plan_credits: Some(0),
             trial_end: None,
             current_period_end: None,
             trial_period_days: None,
@@ -1144,6 +1154,7 @@ async fn fetch_snapshot(
         .map(|w| AccountSubscription {
             subscribed: w.subscribed,
             status: w.status,
+            plan_credits: w.plan_credits,
             trial_end: w.trial_end,
             current_period_end: w.current_period_end,
             trial_period_days: w.trial_period_days,
