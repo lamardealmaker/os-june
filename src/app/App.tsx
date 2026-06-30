@@ -173,7 +173,10 @@ import {
   shouldBlockOnSignIn,
 } from "../lib/account-gate";
 import { checkJuneUpdate, relaunchJune, type JuneUpdate } from "../lib/updater";
-import { shouldPollProcessingStatus } from "./processing-polling";
+import {
+  PROCESSING_DEMO_NOTE_ID,
+  shouldPollProcessingStatus,
+} from "./processing-polling";
 import { attachScrollThumbFade } from "../lib/scroll-thumb-fade";
 import { createInitialState, notesReducer } from "./state/app-state";
 import { handleSidebarResizeStart } from "./sidebar-resize";
@@ -514,6 +517,29 @@ export function App() {
       cancelled = true;
       demoRecorderRef.current?.dispose();
       demoRecorderRef.current = null;
+    };
+  }, []);
+  // Dev-only console driver (window.__processingDemo) that seeds a synthetic
+  // meeting note parked in a transcription-processing stage so the
+  // ProcessingProgressIndicator can be inspected without a real recording.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("../lib/processing-progress-demo").then(
+      ({ registerProcessingProgressDemo }) => {
+        if (cancelled) return;
+        ({ dispose } = registerProcessingProgressDemo({
+          seedNote: (note) => {
+            dispatch({ type: "noteLoaded", note });
+            setActiveView("meetings");
+          },
+        }));
+      },
+    );
+    return () => {
+      cancelled = true;
+      dispose?.();
     };
   }, []);
   // Dev console driver for the sidebar "Relaunch to update" card
@@ -1907,6 +1933,12 @@ export function App() {
       !selectedNote ||
       !shouldPollProcessingStatus(selectedNote.processingStatus)
     ) {
+      return;
+    }
+    // The dev __processingDemo note lives only in the reducer; there is no
+    // backend row to poll, and getNote would clobber its synthetic stage with
+    // a "note not found". Stripped from production via import.meta.env.DEV.
+    if (import.meta.env.DEV && selectedNote.id === PROCESSING_DEMO_NOTE_ID) {
       return;
     }
     const noteId = selectedNote.id;
