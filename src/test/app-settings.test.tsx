@@ -438,8 +438,11 @@ describe("AppSettings", () => {
     expect(
       screen.getByRole("heading", { name: "Billing" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("64% remaining")).toBeInTheDocument();
-    expect(screen.getByText("Usage remaining on Free plan")).toBeInTheDocument();
+    expect(screen.getByText("64%")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Free plan" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Usage remaining")).toBeInTheDocument();
     expect(
       screen.getByRole("progressbar", { name: "Usage remaining" }),
     ).toHaveAttribute("aria-valuenow", "64");
@@ -474,9 +477,9 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(screen.getByText("23% remaining")).toBeInTheDocument();
+    expect(screen.getByText("23%")).toBeInTheDocument();
     expect(
-      screen.getByText("Usage remaining on your subscription"),
+      screen.getByRole("heading", { name: "Pro plan" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("progressbar", { name: "Usage remaining" }),
@@ -511,8 +514,10 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(screen.getByText("97% remaining")).toBeInTheDocument();
-    expect(screen.getByText("Usage remaining on Free plan")).toBeInTheDocument();
+    expect(screen.getByText("97%")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Free plan" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("progressbar", { name: "Usage remaining" }),
     ).toHaveAttribute("aria-valuenow", "97");
@@ -645,15 +650,53 @@ describe("AppSettings", () => {
 
     await user.click(screen.getByRole("tab", { name: "Billing" }));
 
-    expect(screen.getByText("Billing needs attention")).toBeInTheDocument();
     expect(
-      screen.getByText("Usage remaining on your subscription"),
+      screen.getByRole("heading", { name: "Pro plan" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Update billing in your account portal."),
     ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Manage billing" }));
     expect(mocks.osAccountsOpenPortal).toHaveBeenCalledOnce();
     expect(
       await screen.findByText("Opened your account portal in the browser."),
     ).toBeInTheDocument();
+  });
+
+  it("treats subscribed accounts as paid when status is absent", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppSettings
+        account={{
+          ...signedInAccount,
+          balance: {
+            credits: 1200,
+            usdMillis: 1200,
+            usageRemainingPercent: 100,
+          },
+          subscription: { subscribed: true },
+        }}
+        accountLoading={false}
+        sourceMode="microphoneOnly"
+        checkingSourceReadiness={false}
+        onAccountChanged={vi.fn()}
+        onAccountRefresh={vi.fn()}
+        onSourceModeChange={vi.fn()}
+        onEnableSystemAudio={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("tab", { name: "Billing" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Pro plan" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Manage billing" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Upgrade" }),
+    ).not.toBeInTheDocument();
   });
 
   it("hides billing and sign-out controls in local mode", () => {
