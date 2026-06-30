@@ -430,6 +430,8 @@ export function App() {
     useState<RecordingSourceReadinessDto>();
   const [checkingSourceReadiness, setCheckingSourceReadiness] = useState(false);
   const [accessibilityStatus, setAccessibilityStatus] = useState<string>();
+  const [accessibilityBannerDismissed, setAccessibilityBannerDismissed] =
+    useState(false);
   const [systemAudioRefreshRequest, setSystemAudioRefreshRequest] = useState(0);
   const [microphoneStatus, setMicrophoneStatus] = useState<string>();
   const [readyUpdate, setReadyUpdate] =
@@ -1630,6 +1632,10 @@ export function App() {
   }, []);
 
   const accessibilityBlocked = isAccessibilityBlocked(accessibilityStatus);
+  useEffect(() => {
+    if (!accessibilityBlocked) setAccessibilityBannerDismissed(false);
+  }, [accessibilityBlocked]);
+
   // The Rust readiness check probes mic via cpal, which doesn't reflect
   // TCC denial. Trust the dictation helper's AVCaptureDevice status
   // instead — that's the authoritative macOS API for the mic privacy
@@ -2926,8 +2932,9 @@ export function App() {
           onDragRegionPointerDown={handleTitlebarPointerDown}
         />
         <section className="main-panel">
-          {accessibilityBlocked ? (
+          {accessibilityBlocked && !accessibilityBannerDismissed ? (
             <PermissionBanner
+              onDismiss={() => setAccessibilityBannerDismissed(true)}
               onEnableAccessibility={handleEnableAccessibility}
             />
           ) : null}
